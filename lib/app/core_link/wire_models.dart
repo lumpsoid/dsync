@@ -183,11 +183,7 @@ ProfileEntry profile(wire.ProfileEntry entry) => switch (entry) {
     peerName: value.peerName,
     jobs: value.jobs,
     ignorePatterns: value.ignore,
-    lastRun: switch (value.lastRun) {
-      wire.LastRunView.settled => LastRun.settled,
-      wire.LastRunView.writeHeld => LastRun.writeHeld,
-      wire.LastRunView.died => LastRun.died,
-    },
+    lastRun: _lastRun(value.lastRun),
     entries: [
       for (final entry in value.entries)
         EntryView(
@@ -208,7 +204,21 @@ ProfileEntry profile(wire.ProfileEntry entry) => switch (entry) {
     name: name,
     message: message,
   ),
+  wire.ProfileEntryUnsaved(:final value) => UnsavedRun(
+    entryId: value.entryId,
+    pair: switch (value.pair) {
+      final pair? => OtherEntry(a: pair.a, b: pair.b),
+      null => null,
+    },
+    lastRun: _lastRun(value.lastRun),
+  ),
   _ => throw StateError('unknown profile entry: $entry'),
+};
+
+LastRun _lastRun(wire.LastRunView lastRun) => switch (lastRun) {
+  wire.LastRunView.settled => LastRun.settled,
+  wire.LastRunView.writeHeld => LastRun.writeHeld,
+  wire.LastRunView.died => LastRun.died,
 };
 
 wire.RunTarget wireTarget(RunTarget target) => switch (target) {

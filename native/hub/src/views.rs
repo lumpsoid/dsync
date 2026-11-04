@@ -189,7 +189,7 @@ pub enum ProbeOutcome {
     Refused { message: String },
 }
 
-/// One saved profile.
+/// One saved profile, or a run no saved profile claims.
 #[derive(Serialize, SignalPiece)]
 pub enum ProfileEntry {
     /// The head's shape: every entry pairs a root on this device with one
@@ -202,6 +202,19 @@ pub enum ProfileEntry {
     },
     /// The file would not load; `message` says why.
     Unreadable { name: String, message: String },
+    /// A run marker (SPEC §7.6) of an entry no saved profile has: a run
+    /// started without saving it did not finish (task 75af93).
+    Unsaved(UnsavedRunView),
+}
+
+#[derive(Serialize, SignalPiece)]
+pub struct UnsavedRunView {
+    pub entry_id: String,
+    /// The two replicas as the run named them; `None` when the marker
+    /// does not parse.
+    pub pair: Option<OtherEntryView>,
+    /// Never [`LastRunView::Settled`]: there is a marker.
+    pub last_run: LastRunView,
 }
 
 /// One entry of an [`ProfileEntry::Other`] profile, its sides as typed.

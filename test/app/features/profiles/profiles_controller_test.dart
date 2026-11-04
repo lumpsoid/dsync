@@ -1,4 +1,5 @@
 import 'package:dsync/app/app_controller.dart';
+import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/other_entry.dart';
 import 'package:dsync/app/core_link/models/profile_entry.dart';
 import 'package:dsync/app/features/profiles/profiles_controller.dart';
@@ -83,6 +84,39 @@ void main() {
       await controller.refresh();
 
       expect([for (final row in app.state.profiles) row.name], ['weekly']);
+      expect(app.state.unsavedRuns, isEmpty);
+    });
+
+    test('a run no saved profile claims that did not finish is listed as a '
+        'warning of its own (task 75af93)', () async {
+      core.reply<wire.CoreCommandListProfiles>(
+        profilesReply([
+          savedProfile(),
+          const UnsavedRun(
+            entryId: 'u1',
+            pair: OtherEntry(
+              a: '/home/me/Docs',
+              b: 'peer://phone:/sdcard/Docs',
+            ),
+            lastRun: LastRun.died,
+          ),
+          const UnsavedRun(
+            entryId: 'u2',
+            pair: null,
+            lastRun: LastRun.writeHeld,
+          ),
+        ]),
+      );
+
+      await controller.refresh();
+
+      expect([for (final row in app.state.profiles) row.name], ['weekly']);
+      final [died, held] = app.state.unsavedRuns;
+      expect(died.entryId, 'u1');
+      expect(died.title, '/home/me/Docs ↔ peer://phone:/sdcard/Docs');
+      expect(died.warning, contains('did not finish'));
+      expect(held.title, 'A run whose folders are not known');
+      expect(held.warning, contains('still held back'));
     });
 
     test('a store the core cannot read is an error line, not a throw and '

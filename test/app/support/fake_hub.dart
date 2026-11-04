@@ -490,11 +490,7 @@ wire.ProfileEntry wireProfile(ProfileEntry entry) => switch (entry) {
       peerName: head.peerName,
       jobs: head.jobs,
       ignore: head.ignorePatterns,
-      lastRun: switch (head.lastRun) {
-        LastRun.settled => wire.LastRunView.settled,
-        LastRun.writeHeld => wire.LastRunView.writeHeld,
-        LastRun.died => wire.LastRunView.died,
-      },
+      lastRun: _wireLastRun(head.lastRun),
       entries: [
         for (final entry in head.entries)
           wire.EntryView(
@@ -518,6 +514,23 @@ wire.ProfileEntry wireProfile(ProfileEntry entry) => switch (entry) {
     name: name,
     message: message,
   ),
+  UnsavedRun(:final entryId, :final pair, :final lastRun) =>
+    wire.ProfileEntryUnsaved(
+      value: wire.UnsavedRunView(
+        entryId: entryId,
+        pair: switch (pair) {
+          final pair? => wire.OtherEntryView(a: pair.a, b: pair.b),
+          null => null,
+        },
+        lastRun: _wireLastRun(lastRun),
+      ),
+    ),
+};
+
+wire.LastRunView _wireLastRun(LastRun lastRun) => switch (lastRun) {
+  LastRun.settled => wire.LastRunView.settled,
+  LastRun.writeHeld => wire.LastRunView.writeHeld,
+  LastRun.died => wire.LastRunView.died,
 };
 
 wire.ArchiveView wireArchive(ArchiveInfo archive) => wire.ArchiveView(

@@ -13,6 +13,7 @@ import 'core_link/models/profile_entry.dart';
 import 'paired_device_row.dart';
 import 'profile_row.dart';
 import 'theme_preference.dart';
+import 'unsaved_run_row.dart';
 
 /// The head's bootstrap orchestrator: owns [AppState] and the one
 /// [CoreLink] every feature controller borrows (SPEC §5, §13). The only
@@ -257,11 +258,18 @@ class AppController {
 
   /// Only the head's own shape — this device's folder with one on a paired
   /// device — is a row. A profile the CLI wrote with another shape, or one
-  /// whose file will not load, is the CLI's to run and edit.
-  void _recordProfiles(List<ProfileEntry> entries) => state.recordProfiles([
-    for (final entry in entries)
-      if (entry case final HeadProfile profile) ProfileRow.render(profile),
-  ]);
+  /// whose file will not load, is the CLI's to run and edit. A run no saved
+  /// profile claims is a warning of its own.
+  void _recordProfiles(List<ProfileEntry> entries) => state.recordProfiles(
+    [
+      for (final entry in entries)
+        if (entry case final HeadProfile profile) ProfileRow.render(profile),
+    ],
+    unsavedRuns: [
+      for (final entry in entries)
+        if (entry case final UnsavedRun run) UnsavedRunRow.render(run),
+    ],
+  );
 
   /// Saves [draft] as the profile [name] and re-renders the list. When
   /// [replacing] names a profile saved under another name, that one is

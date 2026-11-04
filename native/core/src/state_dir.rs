@@ -89,6 +89,12 @@ impl StateDir {
     }
 }
 
+/// The entry a run marker's file name belongs to, or `None` for any name
+/// [`StateDir::run_marker`] does not produce.
+pub(crate) fn run_marker_owner(file_name: &str) -> Option<EntryId> {
+    EntryId::parse(file_name.strip_suffix(".run")?).ok()
+}
+
 /// The replica an archive log's file name belongs to, or `None` for any
 /// name [`StateDir::archive_log`] does not produce.
 pub(crate) fn archive_log_owner(file_name: &str) -> Option<(EntryId, Side)> {

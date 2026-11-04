@@ -1,7 +1,7 @@
 // ignore_for_file: type=lint, type=warning
 part of 'signals.dart';
 
-/// One saved profile.
+/// One saved profile, or a run no saved profile claims.
 abstract class ProfileEntry {
   const ProfileEntry();
 
@@ -13,6 +13,7 @@ abstract class ProfileEntry {
       case 0: return ProfileEntryHead.load(deserializer);
       case 1: return ProfileEntryOther.load(deserializer);
       case 2: return ProfileEntryUnreadable.load(deserializer);
+      case 3: return ProfileEntryUnsaved.load(deserializer);
       default: throw Exception('Unknown variant index for ProfileEntry: ' + index.toString());
     }
   }
@@ -230,5 +231,64 @@ class ProfileEntryUnreadable extends ProfileEntry {
     }());
 
     return fullString ?? 'ProfileEntryUnreadable';
+  }
+}
+
+@immutable
+class ProfileEntryUnsaved extends ProfileEntry {
+  const ProfileEntryUnsaved({
+    required this.value,
+  }) : super();
+
+  static ProfileEntryUnsaved load(BinaryDeserializer deserializer) {
+    deserializer.increaseContainerDepth();
+    final instance = ProfileEntryUnsaved(
+      value: UnsavedRunView.deserialize(deserializer),
+    );
+    deserializer.decreaseContainerDepth();
+    return instance;
+  }
+
+  final UnsavedRunView value;
+
+  ProfileEntryUnsaved copyWith({
+    UnsavedRunView? value,
+  }) {
+    return ProfileEntryUnsaved(
+      value: value ?? this.value,
+    );
+  }
+
+  void serialize(BinarySerializer serializer) {
+    serializer.increaseContainerDepth();
+    serializer.serializeVariantIndex(3);
+    value.serialize(serializer);
+    serializer.decreaseContainerDepth();
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+
+    return other is ProfileEntryUnsaved
+      && value == other.value;
+  }
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() {
+    String? fullString;
+
+    assert(() {
+      fullString = '$runtimeType('
+        'value: $value'
+        ')';
+      return true;
+    }());
+
+    return fullString ?? 'ProfileEntryUnsaved';
   }
 }

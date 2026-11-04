@@ -91,6 +91,24 @@ class TraitHelpers {
     }
   }
 
+  static void serializeOptionOtherEntryView(OtherEntryView? value, BinarySerializer serializer) {
+    if (value == null) {
+        serializer.serializeOptionTag(false);
+    } else {
+        serializer.serializeOptionTag(true);
+        value.serialize(serializer);
+    }
+  }
+
+  static OtherEntryView? deserializeOptionOtherEntryView(BinaryDeserializer deserializer) {
+    final tag = deserializer.deserializeOptionTag();
+    if (tag) {
+        return OtherEntryView.deserialize(deserializer);
+    } else {
+        return null;
+    }
+  }
+
   static void serializeOptionProgressView(ProgressView? value, BinarySerializer serializer) {
     if (value == null) {
         serializer.serializeOptionTag(false);

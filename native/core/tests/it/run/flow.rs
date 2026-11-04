@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    BatchDecider, DryRunDecider, LastRun, Replica, ReplicaError, RunError, RunEvent, Stopped,
+    BatchDecider, DryRunDecider, LastRun, MarkerPair, Replica, ReplicaError, RunError, RunEvent,
+    RunMarker, Stopped,
 };
 use dsync_domain::{
     ArchiveCommit, Glob, ReplicaOp, RuleSet, Side, SkippedAt, SkippedReason, Tuning,
@@ -740,6 +741,11 @@ async fn the_run_marker_is_there_while_the_apply_writes_and_gone_once_it_returns
         assert!(
             marker.exists(),
             "the marker is down while a write is under way"
+        );
+        assert_eq!(
+            RunMarker::new(marker.clone()).pair().unwrap(),
+            Some(MarkerPair::of(&site.options())),
+            "the marker names the pair it is of"
         );
         gate.close();
     };

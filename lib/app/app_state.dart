@@ -6,6 +6,7 @@ import 'device_identity_row.dart';
 import 'paired_device_row.dart';
 import 'profile_row.dart';
 import 'theme_preference.dart';
+import 'unsaved_run_row.dart';
 
 /// The one application state of the Flutter head (SPEC §13, §16): whether
 /// the head has bootstrapped enough to show a page at all — and, once it
@@ -38,6 +39,7 @@ class AppState extends ChangeNotifier {
   AppBootstrap _bootstrap = const AppBootstrapLoading();
   List<PairedDeviceRow> _devices = const [];
   List<ProfileRow> _profiles = const [];
+  List<UnsavedRunRow> _unsavedRuns = const [];
   ThemePreference _theme = ThemePreference.system;
 
   /// The gate: loading until `AppController.bootstrap()` has run, then
@@ -54,6 +56,10 @@ class AppState extends ChangeNotifier {
   /// profiles home's first read of the store; the home page's error line,
   /// not this list's emptiness, says when the store could not be read.
   List<ProfileRow> get profiles => _profiles;
+
+  /// The runs no saved profile claims that did not finish, listed with the
+  /// profiles and read the same way.
+  List<UnsavedRunRow> get unsavedRuns => _unsavedRuns;
 
   /// Which brightness the app draws in: the device's own until the stored
   /// choice has been read, and whenever it cannot be.
@@ -84,10 +90,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Replaces the profile list with a freshly rendered one.
-  /// `AppController` only.
-  void recordProfiles(List<ProfileRow> profiles) {
+  /// Replaces the profile list, and the unsaved runs listed with it, with
+  /// freshly rendered ones. `AppController` only.
+  void recordProfiles(
+    List<ProfileRow> profiles, {
+    List<UnsavedRunRow> unsavedRuns = const [],
+  }) {
     _profiles = List.unmodifiable(profiles);
+    _unsavedRuns = List.unmodifiable(unsavedRuns);
     notifyListeners();
   }
 

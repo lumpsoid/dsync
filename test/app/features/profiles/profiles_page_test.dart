@@ -9,6 +9,7 @@ import 'package:dsync/app/features/profiles/profiles_page.dart';
 import 'package:dsync/app/features/profiles/profiles_scope.dart';
 import 'package:dsync/app/profile_breakage.dart';
 import 'package:dsync/app/profile_row.dart';
+import 'package:dsync/app/unsaved_run_row.dart';
 import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/gestures.dart';
@@ -372,6 +373,30 @@ void main() {
     await tester.tap(find.byKey(const Key('profile-run-again-weekly')));
 
     expect(opened, ['weekly']);
+  });
+
+  testWidgets('a run no saved profile claims is warned of above the rows, '
+      'even with none saved (task 75af93)', (tester) async {
+    ready();
+    app.state.recordProfiles(
+      const [],
+      unsavedRuns: const [
+        UnsavedRunRow(
+          entryId: 'u1',
+          title: '/home/me/Docs ↔ peer://phone:/sdcard/Docs',
+          warning: 'A run you did not save did not finish.',
+        ),
+      ],
+    );
+    await pumpPage(tester);
+
+    expect(find.byKey(const Key('profiles-unsaved-run-u1')), findsOneWidget);
+    expect(
+      find.text('/home/me/Docs ↔ peer://phone:/sdcard/Docs'),
+      findsOneWidget,
+    );
+    expect(find.text('A run you did not save did not finish.'), findsOneWidget);
+    expect(find.text('No saved sync profiles yet.'), findsOneWidget);
   });
 
   testWidgets('a profile whose last run finished shows no such warning', (

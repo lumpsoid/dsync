@@ -6,6 +6,8 @@
 use dsync_core::{
     PairedDeviceStore, PairedDevices, ProfileStore, RunMarker, StateDir, check_root_access,
 };
+use std::collections::HashSet;
+
 use dsync_domain::{
     Entry, EntryId, HostFacts, Jobs, Location, Profile, ProfileName, ReplicaLocation, Side,
 };
@@ -15,7 +17,7 @@ use crate::dispatch::{Handled, Hub, blocking, text};
 use crate::folders::ignore_rules;
 use crate::run::run_flags;
 use crate::signals::{ProfileDraft, ReplyResult};
-use crate::views::{EntryView, OtherEntryView, ProfileEntry, ProfileView};
+use crate::views::{EntryView, OtherEntryView, ProfileEntry, ProfileView, UnsavedRunView};
 
 impl Hub {
     pub(crate) async fn list_profiles(&self) -> Handled {
@@ -115,23 +117,54 @@ struct Listing {
 }
 
 impl Listing {
-    /// Every saved profile. One that will not load is listed as such, not
-    /// failed on: the others are still runnable.
+    /// Every saved profile, then every run marker none of them claims.
+    /// One that will not load is listed as such, not failed on: the
+    /// others are still runnable.
     fn entries(&self) -> Result<Vec<ProfileEntry>, String> {
         let paired = PairedDeviceStore::new(&self.state).load().map_err(text)?;
         let names = self.profiles.list().map_err(text)?;
-        Ok(names
+        let mut claimed = HashSet::new();
+        let mut entries: Vec<ProfileEntry> = names
             .into_iter()
             .map(
                 |name| match self.profiles.load(&name, self.facts.platform()) {
-                    Ok(profile) => self.entry(name, &profile, &paired),
+                    Ok(profile) => {
+                        claimed.extend(self.entry_ids(&name, &profile).unwrap_or_default());
+                        self.entry(name, &profile, &paired)
+                    }
                     Err(error) => ProfileEntry::Unreadable {
                         name: name.to_string(),
                         message: error.to_string(),
                     },
                 },
             )
-            .collect())
+            .collect();
+        entries.extend(self.unsaved(&claimed));
+        Ok(entries)
+    }
+
+    /// The run markers whose entry no saved profile has: a run started
+    /// without saving it, or a CLI run over a pair, that did not finish
+    /// (task 75af93). Unreadable reads as absent, as a profile's marker
+    /// does.
+    fn unsaved(&self, claimed: &HashSet<EntryId>) -> Vec<ProfileEntry> {
+        RunMarker::every(&self.state)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(entry_id, _)| !claimed.contains(entry_id))
+            .filter_map(|(entry_id, marker)| {
+                let last_run = marker.last_run().ok()?;
+                let pair = marker.pair().ok()?.map(|pair| OtherEntryView {
+                    a: pair.a,
+                    b: pair.b,
+                });
+                Some(ProfileEntry::Unsaved(UnsavedRunView {
+                    entry_id: entry_id.as_str().to_owned(),
+                    pair,
+                    last_run: last_run.into(),
+                }))
+            })
+            .collect()
     }
 
     /// A profile whose every entry pairs a root on this device with one

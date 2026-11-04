@@ -48,7 +48,7 @@ pub use recalled::{ActionChoice, ConflictChoice, Recall, RowRecall};
 
 use crate::listing::Listing;
 use crate::replica::Replica;
-use crate::run_marker::{LastRun, MarkerRecord, RunMarker};
+use crate::run_marker::{LastRun, MarkerPair, MarkerRecord, RunMarker};
 use crate::state_dir::StateDir;
 use applier::Applier;
 use clock::RunClock;
@@ -446,10 +446,12 @@ impl Run {
         // to die too, a path held back now must still be held back next
         // time.
         let mut on_disk = marker.found;
+        let marked_pair = MarkerPair::of(options);
         if !kept.is_empty() {
             let applying = MarkerRecord::Applying(marker.unfinished.adding(&kept));
             let record = applying.clone();
-            marker_io(marker.path, move |at| at.create(&record)).await?;
+            let named = marked_pair.clone();
+            marker_io(marker.path, move |at| at.create(&named, &record)).await?;
             on_disk = Some(applying);
         }
         let applier = Applier::new(
@@ -488,7 +490,7 @@ impl Run {
             // record, or a dead run's, is what is there: this run
             // finished, and the marker must say so.
             let record = MarkerRecord::Held(held);
-            marker_io(marker.path, move |at| at.create(&record)).await?;
+            marker_io(marker.path, move |at| at.create(&marked_pair, &record)).await?;
         }
         // SPEC §8.2: a run that committed nothing does not compact.
         if !applied.applied.is_empty() {

@@ -8,6 +8,7 @@ import '../../profile_row.dart';
 import '../../readable_width.dart';
 import '../../refresh_action.dart';
 import '../../row_actions_menu.dart';
+import '../../unsaved_run_row.dart';
 import 'profile_row_actions.dart';
 import 'profiles_chrome.dart';
 import 'profiles_controller.dart';
@@ -163,6 +164,7 @@ class _ProfilesBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final profiles = controller.app.state.profiles;
+    final unsavedRuns = controller.app.state.unsavedRuns;
     final error = controller.state.error;
     return RefreshIndicator(
       onRefresh: controller.refresh,
@@ -176,6 +178,7 @@ class _ProfilesBody extends StatelessWidget {
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
             if (error != null) _NoticeTile(error),
+            for (final run in unsavedRuns) _UnsavedRunTile(run),
             if (profiles.isEmpty)
               _EmptyState(onOpenDevices: onOpenDevices)
             else
@@ -225,6 +228,29 @@ class _NoticeTile extends StatelessWidget {
           color: Theme.of(context).colorScheme.error,
         ),
         title: Text(message),
+      ),
+    );
+  }
+}
+
+/// A run no saved profile claims that did not finish (task 75af93): its
+/// two sides and what to do, in the error colour a profile row's own
+/// warning uses. Nothing to tap — the run it names is started again from
+/// Devices, as any unsaved run is.
+class _UnsavedRunTile extends StatelessWidget {
+  const _UnsavedRunTile(this.run);
+
+  final UnsavedRunRow run;
+
+  @override
+  Widget build(BuildContext context) {
+    final error = Theme.of(context).colorScheme.error;
+    return SelectionArea(
+      child: ListTile(
+        key: Key('profiles-unsaved-run-${run.entryId}'),
+        leading: Icon(Icons.warning_amber_outlined, color: error),
+        title: Text(run.title),
+        subtitle: Text(run.warning, style: TextStyle(color: error)),
       ),
     );
   }

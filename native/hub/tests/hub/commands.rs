@@ -4,15 +4,17 @@
 use std::time::SystemTime;
 
 use dsync_core::{
-    DeviceIdentity, MarkerRecord, PairedDevice, PairedDeviceStore, ProfileStore, RunMarker,
-    StateDir,
+    DeviceIdentity, MarkerPair, MarkerRecord, PairedDevice, PairedDeviceStore, ProfileStore,
+    RunMarker, StateDir,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     DIR_LEAF, EntryId, HostFacts, Location, Platform, ProfileName, ReplicaLocation,
 };
 use hub::signals::{CoreCommand, EntryDraft, ProfileDraft, ReplyResult};
-use hub::views::{DeviceView, EntryKindView, LastRunView, ProfileEntry, ProfileView, RootKindView};
+use hub::views::{
+    DeviceView, EntryKindView, LastRunView, ProfileEntry, ProfileView, RootKindView, UnsavedRunView,
+};
 use hub::{Core, Outbox};
 
 use crate::support::{Head, one_entry, write};
@@ -706,8 +708,15 @@ async fn a_two_entry_profile_lists_every_entry_with_its_own_id_and_check() {
     // says so.
     let state = StateDir::new(head.state());
     let entry_id = |id: &str| EntryId::parse(id).unwrap_or_else(|error| panic!("{error}"));
+    let pair = MarkerPair {
+        a: todo.local_root.clone(),
+        b: "peer://phone:/sdcard/todo.md".to_owned(),
+    };
     RunMarker::new(state.run_marker(&entry_id(&todo.entry_id)))
-        .create(&MarkerRecord::Held(dsync_domain::UnfinishedApply::default()))
+        .create(
+            &pair,
+            &MarkerRecord::Held(dsync_domain::UnfinishedApply::default()),
+        )
         .unwrap_or_else(|error| panic!("{error}"));
     let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
     assert_eq!(
@@ -720,6 +729,54 @@ async fn a_two_entry_profile_lists_every_entry_with_its_own_id_and_check() {
     write(&state.run_marker(&entry_id(&list.entry_id)), "");
     let listed = profiles(head.ok(CoreCommand::ListProfiles).await.1);
     assert_eq!(head_profile(&listed, "Two").last_run, LastRunView::Died);
+    assert!(
+        unsaved(&listed).is_empty(),
+        "the profile claims both markers"
+    );
+
+    // With the profile gone, nothing claims them: both are listed as runs
+    // no profile has, the one that names its pair with it.
+    let listed = profiles(
+        head.ok(CoreCommand::DeleteProfile {
+            name: "Two".to_owned(),
+        })
+        .await
+        .1,
+    );
+    let mut unsaved: Vec<_> = unsaved(&listed)
+        .into_iter()
+        .map(|run| {
+            (
+                run.entry_id.clone(),
+                run.pair
+                    .as_ref()
+                    .map(|pair| (pair.a.clone(), pair.b.clone())),
+                run.last_run,
+            )
+        })
+        .collect();
+    unsaved.sort_by_key(|run| run.1.is_none());
+    assert_eq!(
+        unsaved,
+        [
+            (
+                todo.entry_id.clone(),
+                Some((pair.a, pair.b)),
+                LastRunView::WriteHeld
+            ),
+            (list.entry_id.clone(), None, LastRunView::Died),
+        ]
+    );
+}
+
+fn unsaved(listed: &[ProfileEntry]) -> Vec<&UnsavedRunView> {
+    listed
+        .iter()
+        .filter_map(|entry| match entry {
+            ProfileEntry::Unsaved(run) => Some(run),
+            _ => None,
+        })
+        .collect()
 }
 
 #[tokio::test]
