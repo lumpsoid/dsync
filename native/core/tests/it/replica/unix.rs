@@ -74,6 +74,17 @@ async fn a_listener_serves_each_connection_as_its_own_session() {
 }
 
 #[tokio::test]
+async fn the_socket_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let site = Site::new();
+    let socket = site.dir().join("agent.sock");
+    // Left to the umask, a socket is typically 0755 or looser.
+    let _listener = bind_unix(&socket).await.unwrap();
+    let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+#[tokio::test]
 async fn a_stale_socket_left_by_a_killed_agent_is_cleared() {
     let site = Site::new();
     let socket = site.dir().join("agent.sock");

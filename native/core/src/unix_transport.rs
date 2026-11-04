@@ -31,18 +31,27 @@ pub enum UnixBindError {
 }
 
 /// Listens on the socket at `path`, first clearing a stale socket file a
-/// killed agent left behind.
+/// killed agent left behind, and makes the socket owner-only (0600).
 ///
-/// The path is taken as given: no directories are created and no modes
-/// changed - what decides who reaches the socket is the directories above
-/// it, which is the caller's to choose.
+/// The bind takes its mode from the umask, which could let any user on
+/// the host connect; the chmod narrows it to this user whatever the umask.
+/// It comes after the bind, so the directories above the socket stay the
+/// real gate: no directories are created or changed, they are the
+/// caller's to choose.
 pub async fn bind_unix(path: &Path) -> Result<UnixListener, UnixBindError> {
+    use std::os::unix::fs::PermissionsExt;
     let io = |source| UnixBindError::Io {
         path: path.to_owned(),
         source,
     };
     clear_stale_socket(path).await?;
-    UnixListener::bind(path).map_err(io)
+    let listener = UnixListener::bind(path).map_err(io)?;
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(io(error));
+    }
+    Ok(listener)
 }
 
 /// Connects to the agent listening on `path`.
