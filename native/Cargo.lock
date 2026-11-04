@@ -520,7 +520,6 @@ dependencies = [
  "dsync-core",
  "dsync-domain",
  "futures-util",
- "libc",
  "rinf",
  "serde",
  "tempfile",
