@@ -10,14 +10,20 @@ use std::time::Duration;
 
 use dsync_core::{ConnectError, ListedEntry, ReconnectCause, RunEvent};
 use dsync_domain::{
-    Action, Conflict, ConflictCause, Location, MassDelete, MassOverwrite, ReplicaInfo, ScanTally,
-    Side, Status,
+    Action, Conflict, ConflictCause, FormatVersion, Location, MassDelete, MassOverwrite,
+    ReplicaInfo, ScanTally, Side, Status,
 };
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use super::{RunView, words};
+
+/// This output's format, on its leading `entries` line (SPEC §11.4). The
+/// major moves when a consumer would otherwise read a line wrong - a field
+/// or `type` renamed, removed or given another meaning; the minor when a
+/// field or `type` is added, which a consumer ignores.
+const JSON_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
 
 pub struct JsonRenderer<O: Write> {
     out: O,
@@ -37,7 +43,8 @@ impl<O: Write> JsonRenderer<O> {
     }
 
     /// The profile's entries, before the first connects: `[{index,
-    /// entryId, kind, a, b}]`, in run order.
+    /// entryId, kind, a, b}]`, in run order, under the output's
+    /// [`JSON_FORMAT_VERSION`].
     pub fn entries_listed(&mut self, list: &[ListedEntry]) {
         let entries: Vec<Value> = list
             .iter()
@@ -52,7 +59,11 @@ impl<O: Write> JsonRenderer<O> {
                 })
             })
             .collect();
-        let line = json!({"type": "entries", "entries": entries});
+        let line = json!({
+            "type": "entries",
+            "version": JSON_FORMAT_VERSION.to_string(),
+            "entries": entries,
+        });
         let _ = writeln!(self.out, "{line}");
     }
 

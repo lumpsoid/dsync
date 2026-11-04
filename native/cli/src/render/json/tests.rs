@@ -442,6 +442,7 @@ fn entries_are_listed_by_index_kind_and_typed_sides() {
         line,
         json!({
             "type": "entries",
+            "version": "1.0",
             "entries": [
                 {"index": 0, "entryId": PROFILE_ID, "kind": "folder", "a": "~/notes", "b": "peer://phone/notes"},
                 {"index": 1, "entryId": "fedcba9876543210fedcba9876543210", "kind": "file", "a": "~/notes.md", "b": "peer://phone/notes.md"},
