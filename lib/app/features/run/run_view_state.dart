@@ -651,12 +651,22 @@ final class SyncRunPlanRowsChanged extends SyncRunPlanChange {
   conflicts;
 }
 
-/// The apply's progress, verbatim: [completed] of [total] kept actions.
+/// The apply's progress, verbatim: [completed] of [total] kept actions,
+/// and [received] of them downloaded — ahead of [completed] while a
+/// destination's landings lag behind its download.
 final class SyncRunProgress {
-  const SyncRunProgress({required this.completed, required this.total});
+  const SyncRunProgress({
+    required this.completed,
+    required this.received,
+    required this.total,
+  });
 
   final int completed;
+  final int received;
   final int total;
+
+  /// The download is ahead of what has landed and been committed.
+  bool get receivedAhead => received > completed;
 }
 
 /// One entry of the profile's run, as the header strip lists it above the

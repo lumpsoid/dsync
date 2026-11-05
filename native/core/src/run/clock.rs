@@ -58,6 +58,13 @@ impl RunClock {
         metrics.transferred_bytes += bytes;
     }
 
+    /// A stage answered `into_apply` after the apply began: the last one
+    /// is the received mark.
+    pub(crate) fn received(&self, into_apply: Duration) {
+        let mut metrics = self.metrics();
+        metrics.received = metrics.received.max(Some(into_apply));
+    }
+
     pub(crate) fn write_stats(&self, side: Side, stats: Option<WriteStats>) {
         self.metrics().replica_mut(side).write_stats = stats;
     }

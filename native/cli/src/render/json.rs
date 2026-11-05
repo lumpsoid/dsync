@@ -23,7 +23,7 @@ use super::{RunView, words};
 /// major moves when a consumer would otherwise read a line wrong - a field
 /// or `type` renamed, removed or given another meaning; the minor when a
 /// field or `type` is added, which a consumer ignores.
-const JSON_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 0);
+const JSON_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 1);
 
 pub struct JsonRenderer<O: Write> {
     out: O,
@@ -152,9 +152,14 @@ impl<O: Write> JsonRenderer<O> {
                 }
                 typed("result", fields)
             }
-            RunEvent::Progress { completed, total } => json!({
+            RunEvent::Progress {
+                completed,
+                received,
+                total,
+            } => json!({
                 "type": "progress",
                 "completed": completed,
+                "received": received,
                 "total": total,
             }),
             RunEvent::Summary(summary) => json!({

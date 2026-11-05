@@ -85,6 +85,13 @@ pub enum ReplicaOp {
 }
 
 impl ReplicaOp {
+    /// An operation whose time is spent waiting on the replica, not
+    /// keeping it busy: `take_landed` waits for a staged copy to land, so
+    /// its time is the landings' lag, already in the writes it waits on.
+    pub fn is_wait(self) -> bool {
+        matches!(self, ReplicaOp::TakeLanded)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ReplicaOp::Hello => "hello",
@@ -160,6 +167,10 @@ pub struct RunMetrics {
     /// This process's CPU time over the run, user plus system; None where
     /// the platform does not say.
     pub cpu: Option<Duration>,
+    /// How far into the apply the last staged copy's stage answered: when
+    /// the download was done, whatever the landings still had to do. None
+    /// when nothing staged.
+    pub received: Option<Duration>,
 }
 
 impl RunMetrics {
@@ -198,8 +209,9 @@ impl RunMetrics {
         (self.transferred_bytes > 0).then(|| cpu.div_f64(self.transferred_bytes as f64 / MIB))
     }
 
-    /// The `--timings` report. Its head - the `run:` line and the phase
-    /// table - is what `benchmark/pairs/run_timings.dart` parses.
+    /// The `--timings` report. Its head - the `run:`, `cpu:` and
+    /// `received:` lines and the phase table - is what
+    /// `benchmark/pairs/run_timings.dart` parses.
     pub fn render(&self) -> String {
         let mut out = String::new();
         let ops = self.a.op_count() + self.b.op_count();
@@ -218,6 +230,9 @@ impl RunMetrics {
             }
         };
         let _ = writeln!(out, "cpu: {cpu}");
+        if let Some(received) = self.received {
+            let _ = writeln!(out, "received: {} into apply", format_duration(received));
+        }
         let _ = writeln!(out);
         let _ = writeln!(out, "phases");
         for phase in RunPhase::ALL {
@@ -235,6 +250,18 @@ impl RunMetrics {
     }
 }
 
+fn render_op(out: &mut String, op: ReplicaOp, stats: &OpStats) {
+    let mean = stats.mean().map_or_else(|| "—".to_owned(), format_duration);
+    let _ = writeln!(
+        out,
+        "  {:<20}{:>8}{:>10}{mean:>10}{:>10}",
+        op.name(),
+        format_count(stats.count),
+        format_duration(stats.total),
+        format_duration(stats.max)
+    );
+}
+
 fn render_replica(out: &mut String, side: Side, replica: &ReplicaMetrics, wall: Option<Duration>) {
     let _ = writeln!(out);
     let _ = writeln!(
@@ -248,18 +275,16 @@ fn render_replica(out: &mut String, side: Side, replica: &ReplicaMetrics, wall: 
         "  {:<20}{:>8}{:>10}{:>10}{:>10}",
         "operation", "count", "total", "mean", "max"
     );
-    let mut ops: Vec<_> = replica.ops.iter().collect();
-    ops.sort_by(|x, y| y.1.total.cmp(&x.1.total));
-    for (op, stats) in ops {
-        let mean = stats.mean().map_or_else(|| "—".to_owned(), format_duration);
-        let _ = writeln!(
-            out,
-            "  {:<20}{:>8}{:>10}{mean:>10}{:>10}",
-            op.name(),
-            format_count(stats.count),
-            format_duration(stats.total),
-            format_duration(stats.max)
-        );
+    let (waits, mut work): (Vec<_>, Vec<_>) = replica.ops.iter().partition(|(op, _)| op.is_wait());
+    work.sort_by(|x, y| y.1.total.cmp(&x.1.total));
+    for (op, stats) in work {
+        render_op(out, *op, stats);
+    }
+    if !waits.is_empty() {
+        let _ = writeln!(out, "  waits, not busy time");
+        for (op, stats) in waits {
+            render_op(out, *op, stats);
+        }
     }
     if let (Some(stats), Some(wall)) = (&replica.write_stats, wall)
         && stats.files > 0
@@ -325,6 +350,36 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("  read                       1    300 µs    300 µs    300 µs"));
+    }
+
+    #[test]
+    fn take_landed_is_listed_as_a_wait_after_the_work_however_long() {
+        let mut metrics = metrics();
+        metrics
+            .b
+            .record(ReplicaOp::TakeLanded, Duration::from_secs(9));
+        metrics.b.record(ReplicaOp::Stage, Duration::from_millis(7));
+        let report = metrics.render();
+        let b = &report[report.find("replica b").unwrap()..];
+        let row = |name: &str| b.find(&format!("\n  {name} ")).expect(name);
+        let waits = b.find("\n  waits, not busy time\n").expect("waits");
+        assert!(row("stage") < row("read"), "{b}");
+        assert!(row("read") < waits, "{b}");
+        assert!(waits < row("takeLanded"), "{b}");
+        let a = &report[report.find("replica a").unwrap()..report.find("replica b").unwrap()];
+        assert!(!a.contains("waits"), "{a}");
+    }
+
+    #[test]
+    fn the_received_mark_is_its_own_line_and_only_when_something_staged() {
+        let mut metrics = metrics();
+        assert!(!metrics.render().contains("received"));
+        metrics.received = Some(Duration::from_millis(420));
+        let report = metrics.render();
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines[1], "cpu: —");
+        assert_eq!(lines[2], "received: 420.0 ms into apply");
+        assert_eq!(lines[4], "phases");
     }
 
     #[test]

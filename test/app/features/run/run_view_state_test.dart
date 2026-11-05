@@ -54,7 +54,7 @@ void main() {
             planRow(copyTo('a.txt'), outcome: outcome(copyTo('a.txt'))),
             planRow(copyTo('b.txt')),
           ],
-          progress: (completed: 1, total: 2),
+          progress: (completed: 1, received: 1, total: 2),
           applied: 1,
         ),
       );

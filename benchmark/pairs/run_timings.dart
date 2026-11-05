@@ -3,8 +3,9 @@ import 'dart:convert';
 /// The run total, CPU and phases of one `dsync sync --timings` report, read
 /// back from its text (SPEC §17, task 84fc92; plan D11 for the `cpu:` line).
 ///
-/// Only the head of the report is parsed: the total, the CPU line and the
-/// phase table are what a before/after pair is compared on. The rest is kept
+/// Only the head of the report is parsed: the total, the CPU line, the
+/// received mark and the phase table are what a before/after pair is
+/// compared on. The rest is kept
 /// verbatim in the run's own file, where it is read by eye. The Rust CLI's
 /// report is pinned against this parser by `native/cli/tests/cli/timings.rs`,
 /// which renders the same text `test/benchmark/run_timings_test.dart` parses.
@@ -14,6 +15,7 @@ class RunTimings {
     required this.phases,
     this.cpu,
     this.cpuPerMib,
+    this.received,
   });
 
   /// SPEC §17's run total, which leaves out `present`.
@@ -30,12 +32,19 @@ class RunTimings {
   /// [cpu] per MiB of file content moved; null when nothing moved.
   final Duration? cpuPerMib;
 
+  /// How far into `apply` the last staged copy's stage answered (the
+  /// `received:` line): when the download was done, whatever the landings
+  /// still had to do. Null when nothing staged, as the report then has no
+  /// such line. Kept out of [phases]: it is a mark, not a phase.
+  final Duration? received;
+
   /// Returns null when [report] holds no `run:` line — a run that failed
   /// before the report printed, or output that is not a report.
   static RunTimings? parse(String report) {
     Duration? total;
     Duration? cpu;
     Duration? cpuPerMib;
+    Duration? received;
     final phases = <String, Duration>{};
     var inPhases = false;
     for (final line in const LineSplitter().convert(report)) {
@@ -49,6 +58,10 @@ class RunTimings {
         if (parts.length > 1 && parts[1].endsWith(' per MiB')) {
           cpuPerMib = _duration(parts[1].substring(0, parts[1].length - 8));
         }
+        continue;
+      }
+      if (line.startsWith('received: ')) {
+        received = _duration(line.substring(10).split(' into apply').first);
         continue;
       }
       if (line == 'phases') {
@@ -68,6 +81,7 @@ class RunTimings {
             phases: phases,
             cpu: cpu,
             cpuPerMib: cpuPerMib,
+            received: received,
           );
   }
 }

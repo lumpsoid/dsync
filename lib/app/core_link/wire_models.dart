@@ -316,7 +316,11 @@ RunView runView(wire.RunView view) => RunView(
   skipped: [for (final skipped in view.skipped) _skipped(skipped)],
   plan: _planUpdate(view.plan),
   progress: switch (view.progress) {
-    final p? => (completed: _n(p.completed), total: _n(p.total)),
+    final p? => (
+      completed: _n(p.completed),
+      received: _n(p.received),
+      total: _n(p.total),
+    ),
     null => null,
   },
   applied: _n(view.applied),

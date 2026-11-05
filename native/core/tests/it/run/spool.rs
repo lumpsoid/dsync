@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use dsync_core::{ActionFailure, BatchDecider, LandingHold, Replica, Run, RunEvent};
-use dsync_domain::{Action, EffectiveOptions, Plan, Side, SpoolSetting, Tuning};
+use dsync_domain::{Action, EffectiveOptions, Plan, ReplicaOp, Side, SpoolSetting, Tuning};
 use tokio::sync::Semaphore;
 
 use crate::run::file_entry::FileEntry;
@@ -136,6 +136,22 @@ fn failure_of<'f>(finished: &'f Finished, relative: &str) -> &'f ActionFailure {
 }
 
 /// Whether both archives record `relative`.
+/// Each `Progress` event's `(completed, received, total)`, in order.
+fn progress(finished: &Finished) -> Vec<(usize, usize, usize)> {
+    finished
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::Progress {
+                completed,
+                received,
+                total,
+            } => Some((*completed, *received, *total)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn committed(site: &Site, relative: &str) -> [bool; 2] {
     Side::BOTH.map(|side| site.archive(side).get(&path(relative)).is_some())
 }
@@ -177,6 +193,59 @@ async fn held_landings_leave_every_copy_staged_its_slot_free_and_nothing_landed(
     for name in &names {
         assert_eq!(committed(&site, name), [true, true], "{name}");
     }
+}
+
+#[tokio::test]
+async fn held_landings_show_every_copy_received_while_none_is_completed() {
+    let site = Site::new();
+    let names = new_on_a(&site, 4);
+    let hold = LandingHold::at(&site.root(Side::B));
+    let (b, log_b) = Probe::new(site.replica_spooling(Side::B, spooling(1), SpoolSetting::On));
+    let options = site.options();
+    let mut decider = BatchDecider;
+    let running = run_with(
+        &site,
+        site.replica(Side::A),
+        b,
+        &options,
+        &mut decider,
+        Tuning::DEFAULT,
+    );
+    let watching = async {
+        until(&log_b, names.len(), is_staged).await;
+        hold.release();
+    };
+
+    let (finished, ()) = tokio::join!(running, watching);
+
+    assert_eq!(finished.exit_code(), 0, "{:?}", finished.errors());
+    let total = names.len();
+    let progress = progress(&finished);
+    // Every stage answered while every landing was held: the download was
+    // done with nothing completed.
+    assert!(progress.contains(&(0, total, total)), "{progress:?}");
+    assert_eq!(progress.last(), Some(&(total, total, total)));
+    for (completed, received, _) in &progress {
+        assert!(received >= completed, "{progress:?}");
+    }
+    for pair in progress.windows(2) {
+        let ((was_completed, was_received, _), (completed, received, _)) = (pair[0], pair[1]);
+        assert!(
+            completed >= was_completed && received >= was_received,
+            "{progress:?}"
+        );
+    }
+    // One event per stage answer and one per result.
+    assert_eq!(progress.len(), 2 * total, "{progress:?}");
+    // `--timings` marks when the last stage answered, and lists the wait
+    // for landings apart from the destination's work.
+    let metrics = &finished.report.metrics;
+    assert!(metrics.received.is_some());
+    assert!(metrics.b.ops.contains_key(&ReplicaOp::TakeLanded));
+    let report = metrics.render();
+    assert!(report.contains("\nreceived: "), "{report}");
+    let b = &report[report.find("replica b").unwrap()..];
+    assert!(b.find("waits, not busy time").unwrap() < b.find("takeLanded").unwrap());
 }
 
 #[tokio::test]
@@ -500,6 +569,9 @@ async fn a_landing_back_before_its_stage_answer_is_handled_still_resolves() {
     assert_eq!(site.tree(Side::A), site.tree(Side::B));
     assert_eq!(committed(&site, "a"), [true, true]);
     assert_eq!(committed(&site, "b"), [true, true]);
+    // `a`'s stage answered after its result: it was never counted as
+    // received ahead, so nothing is left over at the end.
+    assert_eq!(progress(&finished).last(), Some(&(2, 2, 2)));
 }
 
 #[tokio::test]

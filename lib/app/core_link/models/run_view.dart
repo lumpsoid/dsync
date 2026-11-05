@@ -60,8 +60,10 @@ final class RunView {
   /// The entry's plan, if it has one yet.
   final RunPlanUpdate plan;
 
-  /// The apply's latest progress.
-  final ({int completed, int total})? progress;
+  /// The apply's latest progress. `received` is `completed` plus the
+  /// staged copies whose results are not yet in: ahead of it while a
+  /// destination's landings lag, equal otherwise.
+  final ({int completed, int received, int total})? progress;
 
   /// How many reported outcomes landed, and how many failed.
   final int applied;

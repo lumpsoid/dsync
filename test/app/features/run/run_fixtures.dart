@@ -147,7 +147,7 @@ WholeRunView runView({
   int bytesToA = 0,
   int bytesToB = 0,
   ({int changed, int kept, bool draft})? recalled,
-  ({int completed, int total})? progress,
+  ({int completed, int received, int total})? progress,
   int applied = 0,
   int failed = 0,
   String? timings,
@@ -164,8 +164,9 @@ WholeRunView runView({
     skipped: skipped,
     plan: const wire.PlanUpdateViewAbsent(),
     progress: switch (progress) {
-      (:final completed, :final total) => wire.ProgressView(
+      (:final completed, :final received, :final total) => wire.ProgressView(
         completed: n(completed),
+        received: n(received),
         total: n(total),
       ),
       null => null,

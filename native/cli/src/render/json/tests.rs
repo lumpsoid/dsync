@@ -243,9 +243,10 @@ fn action_progress_result_summary_and_error_lines() {
     assert_eq!(
         one(RunEvent::Progress {
             completed: 1,
+            received: 2,
             total: 3
         }),
-        json!({"type": "progress", "entry": 0, "completed": 1, "total": 3})
+        json!({"type": "progress", "entry": 0, "completed": 1, "received": 2, "total": 3})
     );
     assert_eq!(
         one(RunEvent::Result {
@@ -442,7 +443,7 @@ fn entries_are_listed_by_index_kind_and_typed_sides() {
         line,
         json!({
             "type": "entries",
-            "version": "1.0",
+            "version": "1.1",
             "entries": [
                 {"index": 0, "entryId": PROFILE_ID, "kind": "folder", "a": "~/notes", "b": "peer://phone/notes"},
                 {"index": 1, "entryId": "fedcba9876543210fedcba9876543210", "kind": "file", "a": "~/notes.md", "b": "peer://phone/notes.md"},

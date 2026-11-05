@@ -61,8 +61,15 @@ pub enum RunEvent {
         action: Action,
         outcome: Result<(), ActionFailure>,
     },
-    /// Outcomes so far against the approved total, after each result.
-    Progress { completed: usize, total: usize },
+    /// Outcomes so far against the approved total, after each result and
+    /// each time a staged copy's stage answers. `received` is `completed`
+    /// plus the staged copies whose results are not yet reported: never
+    /// below `completed`, and equal to it when nothing stages.
+    Progress {
+        completed: usize,
+        received: usize,
+        total: usize,
+    },
     /// The run completed (SPEC §11.4); absent from a run that failed.
     Summary(RunSummary),
     /// A failure. One event per failure; after one that ends the run, only

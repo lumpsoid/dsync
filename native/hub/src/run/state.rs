@@ -396,7 +396,8 @@ struct EntryState {
     reported: HashMap<RelPath, bool>,
     /// How many of `reported` failed.
     failed: usize,
-    progress: Option<(usize, usize)>,
+    /// The last `Progress`: completed, received, total.
+    progress: Option<(usize, usize, usize)>,
 }
 
 impl EntryState {
@@ -464,7 +465,7 @@ impl EntryState {
     }
 
     fn completed(&self) -> usize {
-        self.progress.map_or(0, |(completed, _)| completed)
+        self.progress.map_or(0, |(completed, _, _)| completed)
     }
 
     fn event(&mut self, event: RunEvent) -> Urgency {
@@ -504,8 +505,12 @@ impl EntryState {
                 self.failed = self.failed - usize::from(was_failed) + usize::from(failed);
                 Urgency::Routine
             }
-            RunEvent::Progress { completed, total } => {
-                self.progress = Some((completed, total));
+            RunEvent::Progress {
+                completed,
+                received,
+                total,
+            } => {
+                self.progress = Some((completed, received, total));
                 Urgency::Routine
             }
             RunEvent::Summary(summary) => {
@@ -1117,10 +1122,13 @@ impl RunState {
                 .map(|(side, skipped)| SkippedView::of(*side, skipped))
                 .collect(),
             plan: PlanUpdateView::Absent,
-            progress: entry.progress.map(|(completed, total)| ProgressView {
-                completed: count(completed),
-                total: count(total),
-            }),
+            progress: entry
+                .progress
+                .map(|(completed, received, total)| ProgressView {
+                    completed: count(completed),
+                    received: count(received),
+                    total: count(total),
+                }),
             applied: count(entry.reported.len() - entry.failed),
             failed: count(entry.failed),
             timings: self.timings.clone(),
@@ -1987,6 +1995,7 @@ mod tests {
         assert_eq!(
             state.event(RunEvent::Progress {
                 completed: 2,
+                received: 2,
                 total: 2
             }),
             Urgency::Routine
@@ -1998,6 +2007,23 @@ mod tests {
         assert_eq!((view.applied, view.failed), (2, 0));
         let progress = view.progress.unwrap_or_else(|| panic!("progress"));
         assert_eq!((progress.completed, progress.total), (2, 2));
+    }
+
+    #[test]
+    fn a_download_ahead_of_its_landings_reaches_the_view() {
+        let plan = plan();
+        let mut state = reviewing(&plan);
+        state.event(RunEvent::Progress {
+            completed: 1,
+            received: 3,
+            total: 4,
+        });
+        let view: RunView = state.view();
+        let progress = view.progress.unwrap_or_else(|| panic!("progress"));
+        assert_eq!(
+            (progress.completed, progress.received, progress.total),
+            (1, 3, 4)
+        );
     }
 
     #[test]
@@ -2035,6 +2061,7 @@ mod tests {
         );
         state.event(RunEvent::Progress {
             completed: 4,
+            received: 4,
             total: 9,
         });
         state.event(summary(4));
@@ -2232,6 +2259,7 @@ mod tests {
             dropped_attempt(&mut state, 0);
             state.event(RunEvent::Progress {
                 completed: 4,
+                received: 4,
                 total: 9,
             });
             reconnecting(&mut state, 0);
@@ -2882,6 +2910,7 @@ mod tests {
         start(&mut state, 0);
         state.event(RunEvent::Progress {
             completed: 2,
+            received: 2,
             total: 2,
         });
         finish(&mut state, 0, synced(2));
@@ -2984,6 +3013,7 @@ mod tests {
         start(&mut state, 0);
         state.event(RunEvent::Progress {
             completed: 4,
+            received: 4,
             total: 4,
         });
         finish(&mut state, 0, synced(4));

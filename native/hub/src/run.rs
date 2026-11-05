@@ -1004,6 +1004,7 @@ mod tests {
             control.update(|state| {
                 state.event(RunEvent::Progress {
                     completed: index + 1,
+                    received: index + 1,
                     total: 100,
                 })
             });
@@ -1075,6 +1076,7 @@ mod tests {
         control.update(|state| {
             state.event(RunEvent::Progress {
                 completed: 3,
+                received: 3,
                 total: 9,
             })
         });

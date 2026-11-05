@@ -1178,6 +1178,10 @@ pub enum RunStandingView {
 #[derive(Serialize, SignalPiece)]
 pub struct ProgressView {
     pub completed: u64,
+    /// `completed` plus the staged copies whose stage answered and whose
+    /// results are not yet in: never below it, and equal when nothing
+    /// stages.
+    pub received: u64,
     pub total: u64,
 }
 

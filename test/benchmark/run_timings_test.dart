@@ -61,6 +61,23 @@ void main() {
     expect(unmoved.cpuPerMib, isNull);
   });
 
+  test('the received mark is read apart from the phases, and absent when '
+      'nothing staged', () {
+    expect(RunTimings.parse(report)!.received, isNull);
+
+    // The line as `RunMetrics::render` prints it
+    // (`the_received_mark_is_its_own_line_and_only_when_something_staged`).
+    final staged = RunTimings.parse(
+      report.replaceFirst(
+        'cpu: 3000.0 ms, 30.0 ms per MiB\n',
+        'cpu: 3000.0 ms, 30.0 ms per MiB\nreceived: 420.0 ms into apply\n',
+      ),
+    )!;
+    expect(staged.received, const Duration(milliseconds: 420));
+    expect(staged.phases.keys, isNot(contains('received')));
+    expect(staged.phases['apply'], const Duration(seconds: 54));
+  });
+
   test('output with no report parses to null', () {
     expect(RunTimings.parse('error: cannot reach peer://phone\n'), isNull);
   });

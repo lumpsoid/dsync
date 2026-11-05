@@ -33,6 +33,12 @@
 //!    it: the commit is not atomic, so some of it may have landed, and the
 //!    next run's scan settles which (SPEC §7.3).
 //!
+//! **Progress.** `RunEvent::Progress` goes out after each result, and
+//! again each time a stage answers: `received` is `completed` plus the
+//! staged copies whose results are not yet reported, so a run whose
+//! landings lag still shows its download moving. Without a spool the two
+//! are equal at every event.
+//!
 //! A slow consumer of the run's events parks the pipeline, which parks the
 //! workers, which parks the pump: the run stays within `read_ahead_streams`
 //! actions plus two batches of the last outcome reported.
@@ -57,7 +63,9 @@
 //! connections, and a hard stop is dropping this future.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Instant;
 
 use dsync_domain::{
     Action, FileMeta, FileState, OutOfSpace, OwedCommits, Precondition, RelPath, ReplicaOp,
@@ -95,6 +103,30 @@ pub(crate) struct Applier<'r, A, B> {
     full: OnceLock<Side>,
     /// The copies staged onto A and onto B, waiting to land.
     staging: [Staging; 2],
+    tally: Tally,
+    /// When the apply began: what the received mark is timed from.
+    started: Instant,
+}
+
+/// What `RunEvent::Progress` counts, from both of its emitters.
+#[derive(Default)]
+struct Tally {
+    /// Staged copies whose results are not yet reported: counted when the
+    /// stage answers while the copy still waits, under its side's
+    /// staging lock, so it is counted before it can be taken out; dropped
+    /// when its result is reported.
+    staged: AtomicUsize,
+    /// Held across each `Progress` emit, so the events go out in the order
+    /// they were counted and neither count goes back.
+    reported: tokio::sync::Mutex<Reported>,
+}
+
+#[derive(Default)]
+struct Reported {
+    /// Results reported.
+    completed: usize,
+    /// The apply's actions.
+    total: usize,
 }
 
 /// The copies staged onto one side and not yet handed on, by destination
@@ -122,7 +154,8 @@ struct Pending {
     from: Side,
     source: FileState,
     /// Its stage answered: the destination has it queued or landed, so a
-    /// `take_landed` will not answer empty-handed while it waits.
+    /// `take_landed` will not answer empty-handed while it waits. Counted
+    /// in [`Tally::staged`] from then on.
     staged: bool,
 }
 
@@ -158,12 +191,19 @@ impl Staging {
     }
 
     /// `path`'s stage answered. Its copy may have landed and been handed
-    /// on already.
-    fn staged(&self, path: &RelPath) {
-        if let Some(pending) = lock(&self.state).pending.get_mut(path) {
-            pending.staged = true;
-        }
+    /// on already; while it still waits it is counted in `staged`, and
+    /// `true` says so.
+    fn staged(&self, path: &RelPath, staged: &AtomicUsize) -> bool {
+        let waits = match lock(&self.state).pending.get_mut(path) {
+            Some(pending) => {
+                pending.staged = true;
+                staged.fetch_add(1, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        };
         self.changed.notify_one();
+        waits
     }
 
     /// Takes `path`'s copy out: it landed, or its stage failed. `None`
@@ -235,6 +275,8 @@ enum Prepared {
 struct Owed {
     action: Action,
     outcome: Result<OwedCommits, ActionFailure>,
+    /// A staged copy counted in [`Tally::staged`].
+    staged: bool,
 }
 
 impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
@@ -264,11 +306,14 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             stop,
             full: OnceLock::new(),
             staging: spool_room.map(|room| Staging::new(room > 0)),
+            tally: Tally::default(),
+            started: Instant::now(),
         }
     }
 
     pub(crate) async fn apply(&self, actions: Vec<Action>) -> Applied {
         let total = actions.len();
+        self.tally.reported.lock().await.total = total;
         let total_bytes = actions.iter().map(Action::bytes).sum();
         let admitted = Semaphore::new(self.tuning.read_ahead_streams.max(1));
         let budget = Semaphore::new(self.tuning.read_ahead_budget_bytes);
@@ -404,6 +449,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             prepared => Owed {
                 outcome: self.perform(prepared, emptied).await,
                 action,
+                staged: false,
             },
         };
         self.hand_over(done, owed).await;
@@ -440,7 +486,10 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let (body, moved) = reading.checked(Precondition::of(Some(&source)));
         match self.pair.stage(onto, &path, body, source, expect).await {
             Ok(()) => {
-                staging.staged(&path);
+                self.pair.clock.received(self.started.elapsed());
+                if staging.staged(&path, &self.tally.staged) {
+                    self.received().await;
+                }
                 None
             }
             Err(error) => {
@@ -454,6 +503,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 Some(Owed {
                     action: pending.action,
                     outcome: Err(failure),
+                    staged: pending.staged,
                 })
             }
         }
@@ -494,6 +544,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                             let done = Owed {
                                 action: pending.action,
                                 outcome: Err(failure),
+                                staged: pending.staged,
                             };
                             self.hand_over(done, &owed).await;
                         }
@@ -518,12 +569,16 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             action,
             from,
             source,
-            ..
+            staged,
         } = pending?;
         let outcome = landed
             .map_err(ActionFailure::replica(onto, ReplicaOp::Write))
             .and_then(|landed| self.copied(path, from, source, landed));
-        Some(Owed { action, outcome })
+        Some(Owed {
+            action,
+            outcome,
+            staged,
+        })
     }
 
     /// What a copy that landed owes the archives, counted as copied.
@@ -713,7 +768,12 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                 return applied;
             }
             let committed = self.commit(&batch).await;
-            for Owed { action, outcome } in batch.drain(..) {
+            for Owed {
+                action,
+                outcome,
+                staged,
+            } in batch.drain(..)
+            {
                 reported_bytes += action.bytes();
                 let outcome = match outcome {
                     Ok(_) => committed.clone(),
@@ -730,14 +790,33 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
                     }
                 }
                 self.events.emit(RunEvent::Result { action, outcome }).await;
-                self.events
-                    .emit(RunEvent::Progress {
-                        completed: applied.applied.len() + applied.failed,
-                        total,
-                    })
-                    .await;
+                let mut reported = self.tally.reported.lock().await;
+                reported.completed = applied.applied.len() + applied.failed;
+                if staged {
+                    self.tally.staged.fetch_sub(1, Ordering::SeqCst);
+                }
+                self.emit_progress(&reported).await;
             }
         }
+    }
+
+    /// A staged copy's stage answered while it waits to land: the
+    /// download moved on, whether or not anything has landed.
+    async fn received(&self) {
+        let reported = self.tally.reported.lock().await;
+        self.emit_progress(&reported).await;
+    }
+
+    /// `Progress`, under [`Tally::reported`]'s lock.
+    async fn emit_progress(&self, reported: &Reported) {
+        let received = reported.completed + self.tally.staged.load(Ordering::SeqCst);
+        self.events
+            .emit(RunEvent::Progress {
+                completed: reported.completed,
+                received,
+                total: reported.total,
+            })
+            .await;
     }
 
     /// Commits one batch on both sides at once. Failed actions owe nothing,

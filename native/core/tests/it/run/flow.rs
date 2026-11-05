@@ -698,15 +698,20 @@ async fn results_and_progress_are_emitted_per_action_a_failure_included() {
             ("two".into(), true)
         ]
     );
-    let progress: Vec<(usize, usize)> = finished
+    // Nothing stages here, so nothing is received ahead of its result.
+    let progress: Vec<(usize, usize, usize)> = finished
         .events
         .iter()
         .filter_map(|event| match event {
-            RunEvent::Progress { completed, total } => Some((*completed, *total)),
+            RunEvent::Progress {
+                completed,
+                received,
+                total,
+            } => Some((*completed, *received, *total)),
             _ => None,
         })
         .collect();
-    assert_eq!(progress, [(1, 3), (2, 3), (3, 3)]);
+    assert_eq!(progress, [(1, 1, 3), (2, 2, 3), (3, 3, 3)]);
     let kinds = finished.kinds();
     for (at, event) in kinds.iter().enumerate() {
         if *event == "result" {

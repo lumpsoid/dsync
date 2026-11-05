@@ -365,7 +365,10 @@ void main() {
       'applying': (tester) async {
         await open(
           tester,
-          runView(phase: applying, progress: (completed: 3, total: 10)),
+          runView(
+            phase: applying,
+            progress: (completed: 3, received: 3, total: 10),
+          ),
         );
         // Positive control for the bar probe: the determinate bar is there,
         // and it is not the kind that animates.
@@ -428,12 +431,18 @@ void main() {
     expect(shown(), 'Applying…');
     await deliver(
       tester,
-      runView(phase: applying, progress: (completed: 1, total: 1200)),
+      runView(
+        phase: applying,
+        progress: (completed: 1, received: 1, total: 1200),
+      ),
     );
     expect(shown(), 'Applying 1 of 1,200');
     await deliver(
       tester,
-      runView(phase: applying, progress: (completed: 41, total: 1200)),
+      runView(
+        phase: applying,
+        progress: (completed: 41, received: 41, total: 1200),
+      ),
     );
     expect(shown(), 'Applying 41 of 1,200');
 
@@ -442,7 +451,7 @@ void main() {
       runView(
         standing: over,
         phase: finished(applied: 42),
-        progress: (completed: 42, total: 1200),
+        progress: (completed: 42, received: 42, total: 1200),
         applied: 42,
         timings: 'run: 1s',
       ),
@@ -452,6 +461,35 @@ void main() {
 
     // Nothing left ticking; `testWidgets` itself fails on a pending timer.
     expect(tester.binding.hasScheduledFrame, isFalse);
+  });
+
+  testWidgets('the download shows apart from the landings only while it is '
+      'ahead of them', (tester) async {
+    final received = find.byKey(const Key('run-received'));
+    await open(
+      tester,
+      runView(
+        phase: applying,
+        progress: (completed: 2, received: 7, total: 10),
+      ),
+    );
+    expect(find.text('Applying 2 of 10'), findsOneWidget);
+    expect(received, findsOneWidget);
+    expect(tester.widget<Text>(received).data, 'Received 7 of 10');
+    final bar = tester.widget<LinearProgressIndicator>(
+      find.byType(LinearProgressIndicator),
+    );
+    expect(bar.value, 0.2, reason: 'the bar stays on what completed');
+
+    await deliver(
+      tester,
+      runView(
+        phase: applying,
+        progress: (completed: 7, received: 7, total: 10),
+      ),
+    );
+    expect(find.text('Applying 7 of 10'), findsOneWidget);
+    expect(received, findsNothing);
   });
 
   testWidgets('a long file name wraps whole on a phone-width row, and its '
@@ -531,7 +569,7 @@ void main() {
           planRow(deleteThere('old.txt')),
         ],
         bytesToB: 2048,
-        progress: (completed: 1, total: 2),
+        progress: (completed: 1, received: 1, total: 2),
         applied: 1,
       ),
     );
@@ -902,7 +940,7 @@ void main() {
             planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
           ],
           bytesToB: 2048,
-          progress: (completed: 1, total: 1),
+          progress: (completed: 1, received: 1, total: 1),
           applied: 1,
         ),
       );
@@ -1032,7 +1070,7 @@ void main() {
         runView(
           phase: applying,
           plan: rows,
-          progress: (completed: 1, total: 2),
+          progress: (completed: 1, received: 1, total: 2),
         ),
       );
 
@@ -1052,7 +1090,7 @@ void main() {
             planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
             planRow(deleteThere('old.txt')),
           ],
-          progress: (completed: 1, total: 2),
+          progress: (completed: 1, received: 1, total: 2),
           applied: 1,
         ),
       );
@@ -1122,7 +1160,7 @@ void main() {
             planRow(copyTo('new.txt'), outcome: outcome(copyTo('new.txt'))),
             planRow(deleteThere('old.txt')),
           ],
-          progress: (completed: 1, total: 2),
+          progress: (completed: 1, received: 1, total: 2),
           applied: 1,
         ),
       );

@@ -869,6 +869,15 @@ class _ApplyProgress extends StatelessWidget {
               : 'Applying ${formatCount(progress.completed)} of '
                     '${formatCount(progress.total)}',
         ),
+        // The download apart from its landings: shown only while it is
+        // ahead, so a page whose files are all here but not yet landed
+        // says so. The bar stays on what has completed.
+        if (progress != null && progress.receivedAhead)
+          Text(
+            'Received ${formatCount(progress.received)} of '
+            '${formatCount(progress.total)}',
+            key: const Key('run-received'),
+          ),
         if (progress != null && progress.total > 0) ...[
           const SizedBox(height: 8),
           // The label carries the phase, because a determinate bar takes

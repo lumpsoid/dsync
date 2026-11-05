@@ -124,6 +124,7 @@ fn quiet_prints_only_the_summary_line() {
             },
             RunEvent::Progress {
                 completed: 1,
+                received: 1,
                 total: 1,
             },
             summary(),
@@ -277,6 +278,7 @@ fn apply_lines_show_each_action_its_outcome_and_progress() {
             },
             RunEvent::Progress {
                 completed: 3,
+                received: 3,
                 total: 3,
             },
         ],
@@ -286,6 +288,23 @@ fn apply_lines_show_each_action_its_outcome_and_progress() {
         "> copy A→B  f\n  applied  copy A→B  f\n  failed   copy B→A  g: replica b has no file to \
          copy at this path\n  failed   copy A→B  h: replica b: changed during sync, left for the \
          next run\n  [3/3]\n"
+    );
+}
+
+#[test]
+fn progress_shows_what_was_received_only_while_it_is_ahead() {
+    let progress = |completed, received| RunEvent::Progress {
+        completed,
+        received,
+        total: 3,
+    };
+    let text = out(
+        Verbosity::Normal,
+        &[progress(0, 2), progress(1, 3), progress(3, 3)],
+    );
+    assert_eq!(
+        text,
+        "  [0/3]  received 2/3\n  [1/3]  received 3/3\n  [3/3]\n"
     );
 }
 

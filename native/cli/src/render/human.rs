@@ -232,8 +232,20 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
                 let _ = writeln!(self.out, "> {}  {}", words::action(action), action.path());
             }
             RunEvent::Result { action, outcome } => self.result(action, outcome),
-            RunEvent::Progress { completed, total } => {
-                let _ = writeln!(self.out, "  [{completed}/{total}]");
+            RunEvent::Progress {
+                completed,
+                received,
+                total,
+            } => {
+                // The download apart from its landings, only while ahead.
+                if received > completed {
+                    let _ = writeln!(
+                        self.out,
+                        "  [{completed}/{total}]  received {received}/{total}"
+                    );
+                } else {
+                    let _ = writeln!(self.out, "  [{completed}/{total}]");
+                }
             }
         }
     }

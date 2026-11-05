@@ -6,6 +6,7 @@ part of 'signals.dart';
 class ProgressView {
   const ProgressView({
     required this.completed,
+    required this.received,
     required this.total,
   });
 
@@ -13,6 +14,7 @@ class ProgressView {
     deserializer.increaseContainerDepth();
     final instance = ProgressView(
       completed: deserializer.deserializeUint64(),
+      received: deserializer.deserializeUint64(),
       total: deserializer.deserializeUint64(),
     );
     deserializer.decreaseContainerDepth();
@@ -29,14 +31,17 @@ class ProgressView {
   }
 
   final Uint64 completed;
+  final Uint64 received;
   final Uint64 total;
 
   ProgressView copyWith({
     Uint64? completed,
+    Uint64? received,
     Uint64? total,
   }) {
     return ProgressView(
       completed: completed ?? this.completed,
+      received: received ?? this.received,
       total: total ?? this.total,
     );
   }
@@ -44,6 +49,7 @@ class ProgressView {
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeUint64(completed);
+    serializer.serializeUint64(received);
     serializer.serializeUint64(total);
     serializer.decreaseContainerDepth();
   }
@@ -61,12 +67,14 @@ class ProgressView {
 
     return other is ProgressView
       && completed == other.completed
+      && received == other.received
       && total == other.total;
   }
 
   @override
   int get hashCode => Object.hash(
         completed,
+        received,
         total,
       );
 
@@ -77,6 +85,7 @@ class ProgressView {
     assert(() {
       fullString = '$runtimeType('
         'completed: $completed, '
+        'received: $received, '
         'total: $total'
         ')';
       return true;

@@ -247,7 +247,7 @@ void main() {
       runView(
         connectedAt: at,
         replicas: replicas(lastA: at),
-        progress: (completed: 3, total: 9),
+        progress: (completed: 3, received: 3, total: 9),
         applied: 2,
         failed: 1,
         timings: 'run: 1s',
@@ -256,7 +256,7 @@ void main() {
     expect(read.connectedAt, at);
     expect(read.replicas!.a.lastCommit, at);
     expect(read.replicas!.b.lastCommit, isNull);
-    expect(read.progress, (completed: 3, total: 9));
+    expect(read.progress, (completed: 3, received: 3, total: 9));
     expect((read.applied, read.failed), (2, 1));
     expect(read.timings, 'run: 1s');
   });

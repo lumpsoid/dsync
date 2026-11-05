@@ -396,8 +396,9 @@ class SyncRunController {
         _ => null,
       },
       progress: switch (view.progress) {
-        (:final completed, :final total) => SyncRunProgress(
+        (:final completed, :final received, :final total) => SyncRunProgress(
           completed: completed,
+          received: received,
           total: total,
         ),
         null => null,
