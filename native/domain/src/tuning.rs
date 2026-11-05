@@ -67,10 +67,11 @@ pub struct Tuning {
     /// socket silent this long is idle and gives its slot back early.
     pub client_hello: Duration,
     /// How long a peer listener waits for a session a reclaim ended to
-    /// let go of its replica before serving the dialer that claimed it
-    /// (SPEC §4.3). Below [`Tuning::handshake`]: the listener answers the
-    /// dialer's version frame only after the wait, and the dialer's dial
-    /// is bounded by `handshake`.
+    /// let go of its replica before serving the dialer that claimed it,
+    /// from when that session's spool is first seen not busy - nothing
+    /// queued, nothing on a writer (SPEC §4.3); one still landing is
+    /// waited on for as long as it drains. Checked each
+    /// [`Tuning::heartbeat`].
     pub reclaim_wait: Duration,
     /// The wait before a dropped `peer://` entry's first re-dial; each
     /// further one waits twice the last, up to
@@ -203,11 +204,13 @@ mod tests {
         assert!(tuning.silence_limit > tuning.heartbeat);
     }
 
-    /// A reclaim's wait runs inside the dialer's handshake bound, after
-    /// the TLS handshake; at the bound the dial would time out first.
+    /// A listener answers a claim within one heartbeat - a `Draining`
+    /// frame, or `Issued` - and the dialer waits for that inside its
+    /// handshake bound, after the TLS handshake; at the bound the dial
+    /// would time out first. Each `Draining` then moves the bound.
     #[test]
-    fn a_reclaim_waits_less_than_a_handshake_allows() {
-        assert!(Tuning::DEFAULT.reclaim_wait < Tuning::DEFAULT.handshake);
+    fn a_reclaim_answers_inside_a_handshake() {
+        assert!(Tuning::DEFAULT.heartbeat < Tuning::DEFAULT.handshake);
     }
 
     /// The hello's deadline frees an idle socket's slot early only if it

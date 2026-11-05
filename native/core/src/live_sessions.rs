@@ -18,6 +18,7 @@ use tokio::sync::watch;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::session_token::SessionToken;
+use crate::spool_drain::{DrainProbe, SpoolDrain};
 
 #[derive(Default)]
 pub(crate) struct LiveSessions {
@@ -36,6 +37,9 @@ struct Live {
     end: CancellationToken,
     /// Closes when the session's [`LiveSession`] drops.
     gone: watch::Receiver<()>,
+    /// How to sample the session's spool drain, once it has opened its
+    /// replica.
+    drain: watch::Receiver<Option<DrainProbe>>,
 }
 
 /// One served session's place in the registry. Dropped once the session
@@ -45,7 +49,14 @@ pub(crate) struct LiveSession {
     token: SessionToken,
     end: CancellationToken,
     sessions: Arc<LiveSessions>,
+    drain: watch::Sender<Option<DrainProbe>>,
     _gone: watch::Sender<()>,
+}
+
+/// A live session a claim has ended, as the listener waits for it to go.
+pub(crate) struct Ending {
+    gone: watch::Receiver<()>,
+    drain: watch::Receiver<Option<DrainProbe>>,
 }
 
 impl LiveSessions {
@@ -54,6 +65,7 @@ impl LiveSessions {
         let token = SessionToken::generate();
         let end = CancellationToken::new();
         let (gone_sender, gone) = watch::channel(());
+        let (drain_sender, drain) = watch::channel(None);
         let mut sessions = self.sessions();
         let id = sessions.next;
         sessions.next += 1;
@@ -64,6 +76,7 @@ impl LiveSessions {
                 device,
                 end: end.clone(),
                 gone,
+                drain,
             },
         );
         LiveSession {
@@ -71,30 +84,24 @@ impl LiveSessions {
             token,
             end,
             sessions: self.clone(),
+            drain: drain_sender,
             _gone: gone_sender,
         }
     }
 
-    /// Ends the live session `claim` names if it serves `device`, and
-    /// waits up to `wait` for it to be gone. Whether one was ended.
-    pub(crate) async fn reclaim(
-        &self,
-        claim: &SessionToken,
-        device: DeviceId,
-        wait: Duration,
-    ) -> bool {
-        let named = self
-            .sessions()
+    /// Ends the live session `claim` names if it serves `device`: how to
+    /// wait for it to go. `None` when the claim names no such session.
+    pub(crate) fn end(&self, claim: &SessionToken, device: DeviceId) -> Option<Ending> {
+        let sessions = self.sessions();
+        let live = sessions
             .live
             .values()
-            .find(|live| live.token.is(claim) && live.device == device)
-            .map(|live| (live.end.clone(), live.gone.clone()));
-        let Some((end, mut gone)) = named else {
-            return false;
-        };
-        end.cancel();
-        let _ = tokio::time::timeout(wait, async { while gone.changed().await.is_ok() {} }).await;
-        true
+            .find(|live| live.token.is(claim) && live.device == device)?;
+        live.end.cancel();
+        Some(Ending {
+            gone: live.gone.clone(),
+            drain: live.drain.clone(),
+        })
     }
 
     fn sessions(&self) -> MutexGuard<'_, Sessions> {
@@ -111,11 +118,33 @@ impl LiveSession {
     pub(crate) fn ended(&self) -> WaitForCancellationFutureOwned {
         self.end.clone().cancelled_owned()
     }
+
+    /// Where this session publishes how to sample its spool drain, for a
+    /// reclaim waiting on it.
+    pub(crate) fn drain_publisher(&self) -> watch::Sender<Option<DrainProbe>> {
+        self.drain.clone()
+    }
 }
 
 impl Drop for LiveSession {
     fn drop(&mut self) {
         self.sessions.sessions().live.remove(&self.id);
+    }
+}
+
+impl Ending {
+    /// Waits up to `wait` for the session to be gone; whether it is.
+    pub(crate) async fn gone_within(&mut self, wait: Duration) -> bool {
+        let gone = async { while self.gone.changed().await.is_ok() {} };
+        tokio::time::timeout(wait, gone).await.is_ok()
+    }
+
+    /// The session's spool drain now: nothing queued and not busy while
+    /// it has no replica open, no spool, or has let its replica go.
+    pub(crate) fn drain(&self) -> SpoolDrain {
+        // Cloned out: the probe runs with no lock of the watch held.
+        let probe = self.drain.borrow().clone();
+        probe.and_then(|probe| probe()).unwrap_or_default()
     }
 }
 
@@ -141,11 +170,12 @@ mod tests {
             drop(session);
         });
         let started = tokio::time::Instant::now();
-        assert!(sessions.reclaim(&token, device(1), WAIT).await);
+        let mut ending = sessions.end(&token, device(1)).unwrap();
+        assert!(ending.gone_within(WAIT).await);
         assert_eq!(started.elapsed(), Duration::from_secs(1));
         serving.await.unwrap();
         // The token went with its session: claiming it again ends nothing.
-        assert!(!sessions.reclaim(&token, device(1), WAIT).await);
+        assert!(sessions.end(&token, device(1)).is_none());
     }
 
     #[tokio::test(start_paused = true)]
@@ -153,19 +183,12 @@ mod tests {
         let sessions = Arc::new(LiveSessions::default());
         let session = sessions.register(device(1));
         let token = session.token().clone();
-        assert!(!sessions.reclaim(&token, device(2), WAIT).await);
-        assert!(
-            !sessions
-                .reclaim(&SessionToken::generate(), device(1), WAIT)
-                .await
-        );
+        assert!(sessions.end(&token, device(2)).is_none());
+        assert!(sessions.end(&SessionToken::generate(), device(1)).is_none());
         assert!(!session.end.is_cancelled());
         // Positive control: the right device with the right token.
-        drop(tokio::spawn(async move {
-            session.ended().await;
-            drop(session);
-        }));
-        assert!(sessions.reclaim(&token, device(1), WAIT).await);
+        assert!(sessions.end(&token, device(1)).is_some());
+        assert!(session.end.is_cancelled());
     }
 
     #[tokio::test(start_paused = true)]
@@ -173,12 +196,37 @@ mod tests {
         let sessions = Arc::new(LiveSessions::default());
         let session = sessions.register(device(1));
         let started = tokio::time::Instant::now();
-        assert!(
-            sessions
-                .reclaim(&session.token().clone(), device(1), WAIT)
-                .await
-        );
+        let mut ending = sessions.end(&session.token().clone(), device(1)).unwrap();
+        assert!(!ending.gone_within(WAIT).await);
         assert_eq!(started.elapsed(), WAIT);
         assert!(session.end.is_cancelled());
+    }
+
+    /// What the session's probe samples is what its reclaim reads, each
+    /// time it asks; nothing until the session publishes one.
+    #[tokio::test(start_paused = true)]
+    async fn an_ending_samples_the_drain_its_session_publishes() {
+        let sessions = Arc::new(LiveSessions::default());
+        let session = sessions.register(device(1));
+        let ending = sessions.end(&session.token().clone(), device(1)).unwrap();
+        assert_eq!(ending.drain(), SpoolDrain::default());
+        let (set, now) = watch::channel(SpoolDrain {
+            queued_bytes: 4096,
+            busy: true,
+        });
+        let probe: DrainProbe = Arc::new(move || Some(*now.borrow()));
+        session.drain_publisher().send_replace(Some(probe));
+        assert_eq!(ending.drain().queued_bytes, 4096);
+        set.send_replace(SpoolDrain {
+            queued_bytes: 0,
+            busy: true,
+        });
+        assert_eq!(
+            ending.drain(),
+            SpoolDrain {
+                queued_bytes: 0,
+                busy: true
+            }
+        );
     }
 }

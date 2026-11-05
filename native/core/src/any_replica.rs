@@ -132,6 +132,13 @@ impl Replica for AnyReplica {
         }
     }
 
+    fn spool_drain(&self) -> Option<crate::spool_drain::SpoolDrain> {
+        match self {
+            AnyReplica::Local(local) => local.spool_drain(),
+            AnyReplica::Remote(remote) => remote.spool_drain(),
+        }
+    }
+
     fn base(&self) -> &Path {
         match self {
             AnyReplica::Local(local) => Replica::base(local),

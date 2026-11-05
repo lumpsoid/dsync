@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use dsync_domain::{Bucket, BucketCount, ChangedScan, RelPath, ReplicaSpec, Tuning};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::body::Body;
@@ -29,6 +29,7 @@ use crate::remote_replica::silent_if_timed_out;
 use crate::replica::{BucketTicket, DigestTicket, Replica};
 use crate::replica_error::ReplicaError;
 use crate::served_reads::ServedReads;
+use crate::spool_drain::DrainProbe;
 use crate::transport::{
     Liveness, Outbox, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
@@ -53,6 +54,9 @@ pub struct ReplicaServer<F> {
     tuning: Tuning,
     reads: ServedReads,
     failed: Failed,
+    /// Where a session publishes how to sample its spool's drain, for
+    /// whoever waits on it to finish ([`ReplicaServer::publishing_drain`]).
+    drain: Option<watch::Sender<Option<DrainProbe>>>,
 }
 
 /// Told of every failure a session answers with, in full.
@@ -77,7 +81,21 @@ where
             tuning,
             reads,
             failed: Arc::new(|_: &ReplicaError| {}),
+            drain: None,
         }
+    }
+
+    /// From the moment a session opens its replica, publishes into
+    /// `drain` how to sample that replica's spool drain: a peer listener
+    /// holding a reclaim waits while the session it ended is still busy
+    /// landing - whether it has reached its settle yet or is still
+    /// joining a request that waits on a landing.
+    pub(crate) fn publishing_drain(
+        mut self,
+        drain: watch::Sender<Option<DrainProbe>>,
+    ) -> ReplicaServer<F> {
+        self.drain = Some(drain);
+        self
     }
 
     /// Tells `failed` of every failure a session answers with, before it
@@ -238,6 +256,19 @@ where
             reads: self.reads.clone(),
             failed: self.failed.clone(),
         });
+        if let Some(drain) = &self.drain {
+            // From here, not from the settle: an ended session may first
+            // spend long joining a request that waits on a landing.
+            // Weak: the probe never keeps the replica, or its lock, alive
+            // past a sample.
+            let sampled = Arc::downgrade(&served);
+            let probe: DrainProbe = Arc::new(move || {
+                sampled
+                    .upgrade()
+                    .and_then(|served| served.replica.spool_drain())
+            });
+            drain.send_replace(Some(probe));
+        }
         let hello = hello.map(Reply::Hello);
         reply(outbox, first.id, hello.map_err(|error| served.sent(error))).await;
         // At most a window of requests served at once (SPEC §4.2): a served
@@ -1677,6 +1708,10 @@ mod tests {
 
         fn write_stats(&self) -> Option<WriteStats> {
             Replica::write_stats(&self.inner)
+        }
+
+        fn spool_drain(&self) -> Option<crate::spool_drain::SpoolDrain> {
+            Replica::spool_drain(&self.inner)
         }
 
         fn base(&self) -> &std::path::Path {

@@ -845,6 +845,10 @@ impl Replica for RemoteReplica {
             .cloned()
     }
 
+    fn spool_drain(&self) -> Option<crate::spool_drain::SpoolDrain> {
+        None
+    }
+
     fn base(&self) -> &Path {
         Path::new(&self.spec.root)
     }

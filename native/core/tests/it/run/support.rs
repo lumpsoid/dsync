@@ -608,6 +608,10 @@ impl<R: Replica> Replica for Probe<R> {
         self.inner.write_stats()
     }
 
+    fn spool_drain(&self) -> Option<dsync_core::SpoolDrain> {
+        self.inner.spool_drain()
+    }
+
     fn base(&self) -> &std::path::Path {
         self.inner.base()
     }

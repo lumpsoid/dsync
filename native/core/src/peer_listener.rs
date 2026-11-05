@@ -28,6 +28,7 @@ use std::time::SystemTime;
 use dsync_domain::{DeviceId, HostFacts, ReplicaSpec, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
+use tokio::time::Instant;
 use tokio_rustls::LazyConfigAcceptor;
 use tokio_rustls::server::TlsStream;
 
@@ -40,11 +41,12 @@ use crate::paired_device_store::PairedDeviceStore;
 use crate::paired_devices::PairedDevices;
 use crate::peer_event::{PeerEvent, PeerRefusal};
 use crate::peer_pin::{CertificateRefusal, PeerPin, presented, server_config};
-use crate::peer_preamble::issue;
+use crate::peer_preamble::{read_claim, write_draining, write_issued};
 use crate::replica::Replica;
 use crate::replica_error::ReplicaError;
 use crate::replica_server::ReplicaServer;
 use crate::served_reads::ServedReads;
+use crate::spool_drain::SpoolDrain;
 use crate::symlinks::Symlinks;
 use crate::transport::{Liveness, Transport};
 use crate::unauthenticated_slots::{SlotRefusal, UnauthenticatedSlot, UnauthenticatedSlots};
@@ -202,6 +204,7 @@ where
                 // Registered before the reclaim, so this session's token
                 // can never be the one it ends.
                 let live = served.sessions.register(id);
+                let session = session.publishing_drain(live.drain_publisher());
                 let outcome = match served.claimed(&mut tls, &live, id).await {
                     Ok(()) => {
                         let transport =
@@ -222,11 +225,18 @@ where
         }
     }
 
-    /// The preamble (SPEC §4.2) under the handshake deadline: issues
-    /// `live`'s token, and if the dialer claimed a session of its own
-    /// that is still live here, ends it and waits - up to
-    /// [`Tuning::reclaim_wait`] - for it to let go of its replica, so the
-    /// claimant's lock finds it free.
+    /// The preamble (SPEC §4.2): reads the dialer's claim under the
+    /// handshake deadline; if it names a session of the dialer's own that
+    /// is still live here, ends it and waits for it to let go of its
+    /// replica, so the claimant's lock finds it free; then issues `live`'s
+    /// token. While the ended session's spool is busy - anything queued or
+    /// on a writer, whether the session has reached its settle or is
+    /// still joining a request that waits on a landing - the dialer is
+    /// told so every [`Tuning::heartbeat`] with a `Draining` frame: the
+    /// dialer bounds that wait, and a dialer gone fails the next frame. A
+    /// session not busy - no spool, or done landing - is waited on at most
+    /// [`Tuning::reclaim_wait`] from the first sample that found it so,
+    /// checked each heartbeat.
     async fn claimed<S>(
         &self,
         tls: &mut S,
@@ -236,14 +246,38 @@ where
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        let claim = tokio::time::timeout(self.tuning.handshake, issue(tls, live.token()))
+        let handshake = self.tuning.handshake;
+        let claim = tokio::time::timeout(handshake, read_claim(tls))
             .await
-            .map_err(|_| LinkError::from(io::Error::from(io::ErrorKind::TimedOut)))??;
-        if let Some(claim) = claim {
-            self.sessions
-                .reclaim(&claim, device, self.tuning.reclaim_wait)
-                .await;
+            .map_err(|_| timed_out())??;
+        let ending = claim.and_then(|claim| self.sessions.end(&claim, device));
+        if let Some(mut ending) = ending {
+            // When a sample first found the session not busy; busy again
+            // starts it over.
+            let mut idle_since = None;
+            let mut waited_out = |drain: SpoolDrain| {
+                let now = Instant::now();
+                if drain.busy {
+                    idle_since = None;
+                    return false;
+                }
+                now.duration_since(*idle_since.get_or_insert(now)) >= self.tuning.reclaim_wait
+            };
+            if !waited_out(ending.drain()) {
+                while !ending.gone_within(self.tuning.heartbeat).await {
+                    let drain = ending.drain();
+                    if waited_out(drain) {
+                        break;
+                    }
+                    tokio::time::timeout(handshake, write_draining(tls, drain.queued_bytes))
+                        .await
+                        .map_err(|_| timed_out())??;
+                }
+            }
         }
+        tokio::time::timeout(handshake, write_issued(tls, live.token()))
+            .await
+            .map_err(|_| timed_out())??;
         Ok(())
     }
 
@@ -308,6 +342,11 @@ where
     }
 }
 
+/// A preamble step that ran past the handshake deadline.
+fn timed_out() -> LinkError {
+    LinkError::from(io::Error::from(io::ErrorKind::TimedOut))
+}
+
 /// Whether two of `device`'s grants nest as this host resolves them now,
 /// resolved off the executor since it asks the filesystem.
 async fn grants_nest(device: PairedDevice) -> bool {
@@ -336,7 +375,11 @@ mod tests {
 
     use super::*;
     use crate::local_replica::LocalReplica;
+    use crate::peer_preamble::Preamble;
+    use crate::session_token::SessionToken;
     use crate::state_dir::StateDir;
+    use crate::version_handshake::{PROTOCOL_VERSION, handshake, version_frame};
+    use tokio::io::BufReader;
 
     type Open = fn(ReplicaSpec, Symlinks) -> std::future::Ready<Result<LocalReplica, ReplicaError>>;
 
@@ -456,5 +499,275 @@ mod tests {
         let refused = listener.authenticate(server, slot()).await;
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert!(matches!(refused, Err(PeerRefusal::Handshake(_))));
+    }
+
+    fn phone() -> DeviceId {
+        DeviceId::from_spki_der(&[1])
+    }
+
+    /// The bytes a listener wrote, split into its preamble frames, in
+    /// order, and whatever followed them.
+    async fn frames(written: &[u8]) -> (Vec<Preamble>, Vec<u8>) {
+        let mut rest = written;
+        let mut frames = Vec::new();
+        while rest.starts_with(b"dsync-ps") {
+            frames.push(Preamble::read_from(&mut rest).await.unwrap());
+        }
+        (frames, rest.to_vec())
+    }
+
+    /// A dialer claiming `claim` against `listener`, its version frame
+    /// sent straight after, as `PeerDialer` would; the listener's half
+    /// served for `live`, then the version exchange. How the preamble
+    /// ended, how long it took, and every byte the listener wrote.
+    async fn dial(
+        listener: &PeerListener<Open>,
+        live: &LiveSession,
+        claim: Option<SessionToken>,
+    ) -> (Result<(), LinkError>, Duration, Vec<u8>) {
+        let (mut dialer, far) = duplex(64 * 1024);
+        Preamble::Claim { reclaim: claim }
+            .write_to(&mut dialer)
+            .await
+            .unwrap();
+        version_frame(PROTOCOL_VERSION)
+            .write_to(&mut dialer)
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let serving = async {
+            let mut far = far;
+            let claimed = listener.claimed(&mut far, live, phone()).await;
+            let took = started.elapsed();
+            if claimed.is_ok() {
+                let (read, mut write) = tokio::io::split(&mut far);
+                handshake(&mut BufReader::new(read), &mut write)
+                    .await
+                    .unwrap();
+            }
+            (claimed, took)
+        };
+        let reading = async {
+            let mut written = Vec::new();
+            dialer.read_to_end(&mut written).await.unwrap();
+            written
+        };
+        let ((claimed, took), written) = tokio::join!(serving, reading);
+        (claimed, took, written)
+    }
+
+    /// This build's version frame, as the listener writes it.
+    async fn version_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        version_frame(PROTOCOL_VERSION)
+            .write_to(&mut bytes)
+            .await
+            .unwrap();
+        bytes
+    }
+
+    /// Publishes a probe for `session` that samples what the test sets.
+    fn probed(session: &LiveSession, drain: SpoolDrain) -> tokio::sync::watch::Sender<SpoolDrain> {
+        let (set, now) = tokio::sync::watch::channel(drain);
+        let probe: crate::spool_drain::DrainProbe = Arc::new(move || Some(*now.borrow()));
+        session.drain_publisher().send_replace(Some(probe));
+        set
+    }
+
+    fn busy(queued_bytes: u64) -> SpoolDrain {
+        SpoolDrain {
+            queued_bytes,
+            busy: true,
+        }
+    }
+
+    /// A served session that, once ended, goes through `steps` - each
+    /// drain held for its time - and then goes.
+    fn draining(session: LiveSession, steps: Vec<(SpoolDrain, Duration)>) {
+        let ended = session.ended();
+        // As it stands when the claim ends it, before its task first runs.
+        let set = probed(&session, steps[0].0);
+        tokio::spawn(async move {
+            ended.await;
+            for (drain, held) in steps {
+                set.send_replace(drain);
+                tokio::time::sleep(held).await;
+            }
+            drop(session);
+        });
+    }
+
+    fn draining_frames(frames: &[Preamble]) -> Vec<u64> {
+        frames
+            .iter()
+            .filter_map(|frame| match frame {
+                Preamble::Draining { queued_bytes } => Some(*queued_bytes),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// V15: on the wire, a reclaim of a draining session is the dialer's
+    /// claim, then the listener's `Draining` frames every heartbeat, then
+    /// `Issued` once the session has gone, then the version frame - and
+    /// nothing preamble-shaped after `Issued`.
+    #[tokio::test(start_paused = true)]
+    async fn a_reclaim_drains_before_it_issues_and_then_only_the_version_frame_follows() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let old = listener.sessions.register(phone());
+        let claim = old.token().clone();
+        let seven = Duration::from_secs(7);
+        draining(
+            old,
+            vec![(busy(300), seven), (busy(200), seven), (busy(100), seven)],
+        );
+        let live = listener.sessions.register(phone());
+        let (claimed, took, written) = dial(&listener, &live, Some(claim)).await;
+        claimed.unwrap();
+        // Gone at 21 s; a frame at each heartbeat before that.
+        assert_eq!(took, Duration::from_secs(21));
+        let (frames, rest) = frames(&written).await;
+        let queued = draining_frames(&frames);
+        assert_eq!(queued, [300, 200, 100, 100]);
+        // Every Draining first, then the one Issued last.
+        assert_eq!(frames.len(), queued.len() + 1, "{frames:?}");
+        assert!(
+            matches!(frames.last(), Some(Preamble::Issued { token }) if token.is(live.token())),
+            "{frames:?}"
+        );
+        assert_eq!(rest, version_bytes().await);
+    }
+
+    /// A claimed session with nothing queued is waited on at most
+    /// `reclaim_wait`, and the dialer hears nothing but `Issued`.
+    #[tokio::test(start_paused = true)]
+    async fn a_claimed_session_with_nothing_queued_is_waited_on_only_so_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let stuck = listener.sessions.register(phone());
+        let live = listener.sessions.register(phone());
+        let (claimed, took, written) = dial(&listener, &live, Some(stuck.token().clone())).await;
+        claimed.unwrap();
+        assert_eq!(took, Tuning::DEFAULT.reclaim_wait);
+        let (frames, rest) = frames(&written).await;
+        assert!(
+            matches!(frames.as_slice(), [Preamble::Issued { .. }]),
+            "{frames:?}"
+        );
+        assert_eq!(rest, version_bytes().await);
+        drop(stuck);
+    }
+
+    /// Nothing left to hand a writer is not done: a session whose last
+    /// landings are still on their writers - `queued_bytes` 0, busy - is
+    /// waited on until it goes, far past `reclaim_wait`, and the dialer is
+    /// told it is draining meanwhile.
+    #[tokio::test(start_paused = true)]
+    async fn a_session_busy_with_nothing_queued_is_waited_on_until_it_goes() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let old = listener.sessions.register(phone());
+        let claim = old.token().clone();
+        draining(old, vec![(busy(0), Duration::from_secs(23))]);
+        let live = listener.sessions.register(phone());
+        let (claimed, took, written) = dial(&listener, &live, Some(claim)).await;
+        claimed.unwrap();
+        assert_eq!(took, Duration::from_secs(23));
+        let (frames, _) = frames(&written).await;
+        assert_eq!(draining_frames(&frames), [0, 0, 0, 0]);
+    }
+
+    /// A session that stops being busy just before a heartbeat still gets
+    /// all of `reclaim_wait` from the sample that first found it so.
+    #[tokio::test(start_paused = true)]
+    async fn the_wait_after_a_drain_counts_from_the_first_idle_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let old = listener.sessions.register(phone());
+        let claim = old.token().clone();
+        let heartbeat = Tuning::DEFAULT.heartbeat;
+        // Busy until just before the first heartbeat, then idle for good,
+        // its lock still held.
+        draining(
+            old,
+            vec![
+                (busy(100), heartbeat - Duration::from_millis(100)),
+                (SpoolDrain::default(), Duration::from_secs(3600)),
+            ],
+        );
+        let live = listener.sessions.register(phone());
+        let (claimed, took, written) = dial(&listener, &live, Some(claim)).await;
+        claimed.unwrap();
+        assert_eq!(took, heartbeat + Tuning::DEFAULT.reclaim_wait);
+        let (frames, _) = frames(&written).await;
+        assert_eq!(draining_frames(&frames), [0]);
+    }
+
+    /// A dial that claims nothing is issued at once while another session
+    /// of the same device drains, and ends nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_dial_without_a_claim_does_not_wait_on_a_drain() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let old = listener.sessions.register(phone());
+        let ended = old.ended();
+        let _drain = probed(&old, busy(300));
+        let live = listener.sessions.register(phone());
+        let (claimed, took, written) = dial(&listener, &live, None).await;
+        claimed.unwrap();
+        assert_eq!(took, Duration::ZERO);
+        let (frames, _) = frames(&written).await;
+        assert!(
+            matches!(frames.as_slice(), [Preamble::Issued { .. }]),
+            "{frames:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::ZERO, ended).await.is_err(),
+            "the drained session was not ended"
+        );
+    }
+
+    /// A paired dialer that never sends its claim holds the listener only
+    /// to the handshake deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_dialer_that_never_claims_is_cut_at_the_handshake_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let live = listener.sessions.register(phone());
+        let (_dialer, mut far) = duplex(64 * 1024);
+        let started = Instant::now();
+        let claimed = listener.claimed(&mut far, &live, phone()).await;
+        assert_eq!(started.elapsed(), Tuning::DEFAULT.handshake);
+        assert!(claimed.is_err());
+    }
+
+    /// A dialer that gives up on a drain fails the listener's next
+    /// `Draining` write: the listener does not wait on for nobody.
+    #[tokio::test(start_paused = true)]
+    async fn a_dialer_gone_mid_drain_ends_the_wait_at_the_next_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(&StateDir::new(dir.path()));
+        let stuck = listener.sessions.register(phone());
+        let _drain = probed(&stuck, busy(300));
+        let live = listener.sessions.register(phone());
+        let (mut dialer, mut far) = duplex(64 * 1024);
+        Preamble::Claim {
+            reclaim: Some(stuck.token().clone()),
+        }
+        .write_to(&mut dialer)
+        .await
+        .unwrap();
+        let started = Instant::now();
+        let (claimed, ()) = tokio::join!(listener.claimed(&mut far, &live, phone()), async {
+            assert!(matches!(
+                Preamble::read_from(&mut dialer).await.unwrap(),
+                Preamble::Draining { queued_bytes: 300 }
+            ));
+            drop(dialer);
+        });
+        assert!(claimed.is_err());
+        assert_eq!(started.elapsed(), 2 * Tuning::DEFAULT.heartbeat);
+        drop(stuck);
     }
 }

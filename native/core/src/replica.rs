@@ -24,6 +24,7 @@ use crate::body::{Body, SourceMoved};
 use crate::landings::Landings;
 use crate::listing::Listing;
 use crate::replica_error::ReplicaError;
+use crate::spool_drain::SpoolDrain;
 
 /// One replica, local or remote. Every path is a [`RelPath`]: confined to
 /// the root by construction, so there is no runtime escape check to
@@ -187,6 +188,12 @@ pub trait Replica: Send + Sync {
     /// §17): a local replica's own pool, or what a remote one's server
     /// reported with its last `unlock`. `None` until there is a figure.
     fn write_stats(&self) -> Option<WriteStats>;
+
+    /// How far this replica's spool still has to go landing what it staged
+    /// (SPEC §4.2): a local replica's own while a lock holds its spool.
+    /// `None` with no spool, and always on a remote one, whose spool is
+    /// its server's.
+    fn spool_drain(&self) -> Option<SpoolDrain>;
 
     /// The folder this replica's paths sit under, as its own host names
     /// it: a local root's folder (a file root's, the one it sits in); a

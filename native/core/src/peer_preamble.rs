@@ -1,8 +1,9 @@
 //! The peer:// preamble (SPEC §4.2): the frames a dialer and a listener
 //! trade right after TLS, before the replica protocol's version frame.
 //! The dialer claims the session it held before ([`Preamble::Claim`]); the
-//! listener issues this connection's token ([`Preamble::Issued`]). Both
-//! ends write first and read second, so it costs no round trip.
+//! listener reads that claim first, sends [`Preamble::Draining`] while the
+//! claimed session lands what it staged, and only then issues this
+//! connection's token ([`Preamble::Issued`]).
 //!
 //! Every frame is the magic, the preamble's own `major.minor` as
 //! big-endian `u32`s, a kind byte, a big-endian `u16` payload length and
@@ -29,12 +30,15 @@ pub(crate) const PREAMBLE_VERSION: FormatVersion = FormatVersion::new(1, 0);
 /// reads as one.
 const MAGIC: &[u8; 8] = b"dsync-ps";
 
-/// The most the dialer waits for the listener's [`Preamble::Issued`],
-/// however many [`Preamble::Draining`] frames arrive meanwhile. Each one
-/// restarts the handshake bound (`Tuning::handshake`, in `dsync-domain`),
-/// so without this a paired listener that drains forever would hold the
-/// dialer forever. Well past any honest drain: the listener's own
-/// `Tuning::reclaim_wait` is 5 s.
+/// The most the dialer waits for the listener's [`Preamble::Issued`]
+/// without a [`Preamble::Draining`] frame lowering `queued_bytes` below
+/// the lowest it has seen. Each frame restarts the handshake bound
+/// (`Tuning::handshake`, in `dsync-domain`), so without this a paired
+/// listener that drains forever would hold the dialer forever. An honest
+/// drain lowers the figure with every chunk it hands a writer, so the
+/// wait is held to progress, not to a total: an 8,000-file drain may
+/// take minutes. A frame that repeats or raises the figure is a sign of
+/// life, not progress; the first frame starts the clock.
 pub(crate) const DRAINING_LIMIT: Duration = Duration::from_secs(60);
 
 const CLAIM: u8 = 0x01;
@@ -49,9 +53,9 @@ pub(crate) enum Preamble {
     /// Listener to dialer: this connection's token.
     Issued { token: SessionToken },
     /// Listener to dialer, before [`Preamble::Issued`]: the claimed
-    /// session is still landing `queued` writes. Nothing sends it yet
-    /// (task ecff0e); the dialer already takes it as a sign of life.
-    Draining { queued: u64 },
+    /// session is still landing what it staged, `queued_bytes` of it not
+    /// yet handed to a writer. Sent every `Tuning::heartbeat`.
+    Draining { queued_bytes: u64 },
 }
 
 impl Preamble {
@@ -66,7 +70,7 @@ impl Preamble {
                 (CLAIM, payload)
             }
             Preamble::Issued { token } => (ISSUED, token.as_bytes().to_vec()),
-            Preamble::Draining { queued } => (DRAINING, queued.to_be_bytes().to_vec()),
+            Preamble::Draining { queued_bytes } => (DRAINING, queued_bytes.to_be_bytes().to_vec()),
         };
         let mut frame = MAGIC.to_vec();
         frame.extend_from_slice(&PREAMBLE_VERSION.major().to_be_bytes());
@@ -141,7 +145,7 @@ fn decode(kind: u8, payload: &[u8]) -> Option<Preamble> {
             token: token(payload)?,
         }),
         DRAINING => Some(Preamble::Draining {
-            queued: u64::from_be_bytes(payload.get(..8)?.try_into().ok()?),
+            queued_bytes: u64::from_be_bytes(payload.get(..8)?.try_into().ok()?),
         }),
         _ => None,
     }
@@ -170,13 +174,21 @@ pub(crate) enum ClaimFailure {
     Link(LinkError),
 }
 
+/// The lowest `queued_bytes` a draining listener has reported, and until
+/// when the dialer waits for it to fall again.
+#[derive(Clone, Copy)]
+struct Progress {
+    lowest: u64,
+    limit: Instant,
+}
+
 /// The dialer's half: presents `reclaim` and answers the token the
 /// listener issued. Bounded by `deadline`, which every
-/// [`Preamble::Draining`] moves to `window` from its arrival, and the
-/// wait for the token by [`DRAINING_LIMIT`] from the start whatever
-/// moved it: past that the claim fails as [`LinkError::StillDraining`].
-/// `deadline` itself is left uncapped, so what follows the preamble
-/// still has its window after an honest drain that ended near the limit.
+/// [`Preamble::Draining`] moves to `window` from its arrival, and a drain
+/// by [`DRAINING_LIMIT`] from the last frame that lowered its
+/// `queued_bytes`: past that the claim fails as
+/// [`LinkError::StillDraining`]. `deadline` itself is left uncapped, so
+/// what follows the preamble still has its window after an honest drain.
 pub(crate) async fn claim<S>(
     stream: &mut S,
     reclaim: Option<SessionToken>,
@@ -188,20 +200,21 @@ where
 {
     // A listener that refuses this host closes before this write lands;
     // that it closed is read first, because that is what says why.
-    let limit = Instant::now() + DRAINING_LIMIT;
     let sent = tokio::time::timeout_at(*deadline, Preamble::Claim { reclaim }.write_to(stream))
         .await
         .map_err(|_| ClaimFailure::Late)?;
-    let mut draining = None;
+    let mut draining: Option<Progress> = None;
     loop {
-        let wait = (*deadline).min(limit);
+        let wait = draining.map_or(*deadline, |progress| (*deadline).min(progress.limit));
         let frame = tokio::time::timeout_at(wait, Preamble::read_from(stream))
             .await
             .map_err(|_| match draining {
-                Some(queued) if wait == limit => ClaimFailure::Link(LinkError::StillDraining {
-                    limit: DRAINING_LIMIT,
-                    queued,
-                }),
+                Some(progress) if wait == progress.limit => {
+                    ClaimFailure::Link(LinkError::StillDraining {
+                        limit: DRAINING_LIMIT,
+                        queued_bytes: progress.lowest,
+                    })
+                }
                 _ => ClaimFailure::Late,
             })?
             .map_err(ClaimFailure::Link)?;
@@ -210,9 +223,15 @@ where
                 sent.map_err(|error| ClaimFailure::Link(error.into()))?;
                 return Ok(token);
             }
-            Preamble::Draining { queued } => {
-                draining = Some(queued);
-                *deadline = Instant::now() + window;
+            Preamble::Draining { queued_bytes } => {
+                let now = Instant::now();
+                if draining.is_none_or(|progress| queued_bytes < progress.lowest) {
+                    draining = Some(Progress {
+                        lowest: queued_bytes,
+                        limit: now + DRAINING_LIMIT,
+                    });
+                }
+                *deadline = now + window;
             }
             Preamble::Claim { .. } => {
                 return Err(ClaimFailure::Link(LinkError::Protocol(
@@ -223,28 +242,40 @@ where
     }
 }
 
-/// The listener's half: issues `token` and answers what the dialer
-/// claimed. Unbounded: the caller holds it to its deadline.
-pub(crate) async fn issue<S>(
-    stream: &mut S,
-    token: &SessionToken,
-) -> Result<Option<SessionToken>, LinkError>
+/// The listener's first step: what the dialer claimed. Unbounded: the
+/// caller holds it to its deadline.
+pub(crate) async fn read_claim<S>(stream: &mut S) -> Result<Option<SessionToken>, LinkError>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + Unpin,
 {
-    let issued = Preamble::Issued {
-        token: token.clone(),
-    };
-    let sent = issued.write_to(stream).await;
     match Preamble::read_from(stream).await? {
-        Preamble::Claim { reclaim } => {
-            sent?;
-            Ok(reclaim)
-        }
+        Preamble::Claim { reclaim } => Ok(reclaim),
         other => Err(LinkError::Protocol(format!(
             "a {other:?} preamble frame from the dialer"
         ))),
     }
+}
+
+/// Tells the dialer the session it claimed still has `queued_bytes` to
+/// hand its writers. A failed write is a dialer that has gone.
+pub(crate) async fn write_draining<S>(stream: &mut S, queued_bytes: u64) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    Preamble::Draining { queued_bytes }.write_to(stream).await
+}
+
+/// The listener's last step: issues `token`, after which nothing but the
+/// version frame follows. Unbounded: the caller holds it to its deadline.
+pub(crate) async fn write_issued<S>(stream: &mut S, token: &SessionToken) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    Preamble::Issued {
+        token: token.clone(),
+    }
+    .write_to(stream)
+    .await
 }
 
 #[cfg(test)]
@@ -287,8 +318,12 @@ mod tests {
             Preamble::Issued { token: read } => assert!(read.is(&token)),
             other => panic!("{other:?}"),
         }
-        match round_trip(Preamble::Draining { queued: 1 << 40 }).await {
-            Preamble::Draining { queued } => assert_eq!(queued, 1 << 40),
+        match round_trip(Preamble::Draining {
+            queued_bytes: 1 << 40,
+        })
+        .await
+        {
+            Preamble::Draining { queued_bytes } => assert_eq!(queued_bytes, 1 << 40),
             other => panic!("{other:?}"),
         }
     }
@@ -324,7 +359,7 @@ mod tests {
             "{error:?}"
         );
         // Positive control: a later minor that appends is read.
-        let mut frame = Preamble::Draining { queued: 7 }.encode();
+        let mut frame = Preamble::Draining { queued_bytes: 7 }.encode();
         frame[12..16].copy_from_slice(&9u32.to_be_bytes());
         frame[18] += 3;
         frame.extend_from_slice(b"new");
@@ -332,7 +367,7 @@ mod tests {
         near.write_all(&frame).await.unwrap();
         assert!(matches!(
             Preamble::read_from(&mut far).await.unwrap(),
-            Preamble::Draining { queued: 7 }
+            Preamble::Draining { queued_bytes: 7 }
         ));
     }
 
@@ -367,7 +402,9 @@ mod tests {
                     token
                 },
                 async {
-                    let reclaim = issue(&mut listener, &issued).await.unwrap();
+                    let reclaim = read_claim(&mut listener).await.unwrap();
+                    write_draining(&mut listener, 3).await.unwrap();
+                    write_issued(&mut listener, &issued).await.unwrap();
                     let (read, mut write) = tokio::io::split(&mut listener);
                     let agreed = handshake(&mut BufReader::new(read), &mut write).await;
                     (reclaim, agreed)
@@ -382,10 +419,11 @@ mod tests {
         assert_eq!(agreed.unwrap(), PROTOCOL_VERSION);
     }
 
-    /// A listener that sends `draining` frames, then its token, each
-    /// `gap` after the last; the claim's window is `window`.
+    /// A listener that sends a `Draining` frame for each of `draining`,
+    /// then its token, each `gap` after the last; the claim's window is
+    /// `window`.
     async fn claim_against(
-        draining: u32,
+        draining: Vec<u64>,
         gap: Duration,
         window: Duration,
     ) -> Result<(), ClaimFailure> {
@@ -395,23 +433,21 @@ mod tests {
     /// [`claim_against`], and how long the claim took. The listener stops
     /// at the first write the dialer is no longer there to read.
     async fn claim_timed(
-        draining: u32,
+        draining: Vec<u64>,
         gap: Duration,
         window: Duration,
     ) -> (Result<(), ClaimFailure>, Duration) {
         let (mut dialer, mut listener) = duplex(1024);
         let far = tokio::spawn(async move {
             Preamble::read_from(&mut listener).await.unwrap();
-            for queued in 0..u64::from(draining) {
+            for queued_bytes in draining {
                 tokio::time::sleep(gap).await;
-                let frame = Preamble::Draining { queued };
-                if frame.write_to(&mut listener).await.is_err() {
+                if write_draining(&mut listener, queued_bytes).await.is_err() {
                     return;
                 }
             }
             tokio::time::sleep(gap).await;
-            let token = SessionToken::generate();
-            let _ = Preamble::Issued { token }.write_to(&mut listener).await;
+            let _ = write_issued(&mut listener, &SessionToken::generate()).await;
         });
         let started = Instant::now();
         let mut deadline = started + window;
@@ -422,24 +458,94 @@ mod tests {
         (claimed.map(|_| ()), took)
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn draining_past_the_limit_fails_naming_it() {
-        let window = Duration::from_secs(10);
-        let gap = Duration::from_secs(8);
-        // A frame every 8 s, each inside the window, for 160 s.
-        let (claimed, took) = claim_timed(20, gap, window).await;
-        let error = match claimed {
+    fn still_draining(claimed: Result<(), ClaimFailure>) -> LinkError {
+        match claimed {
             Err(ClaimFailure::Link(error @ LinkError::StillDraining { .. })) => error,
             other => panic!("{other:?}"),
-        };
-        assert_eq!(took, DRAINING_LIMIT);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_drain_that_stops_lowering_its_bytes_fails_naming_the_limit() {
+        let window = Duration::from_secs(10);
+        let gap = Duration::from_secs(8);
+        // Lowered to 80 at 24 s, then a frame every 8 s, each inside the
+        // window, that never lowers it again.
+        let mut stalled = vec![100, 90, 80];
+        stalled.extend([80, 85, 80].repeat(7));
+        let (claimed, took) = claim_timed(stalled, gap, window).await;
+        let error = still_draining(claimed);
+        assert_eq!(took, 3 * gap + DRAINING_LIMIT);
+        assert!(
+            matches!(error, LinkError::StillDraining { queued_bytes: 80, limit } if limit == DRAINING_LIMIT),
+            "{error:?}"
+        );
         assert!(error.to_string().contains("still landing"), "{error}");
-        // Positive control: a drain that ends inside the limit, longer
-        // than any one window, connects.
-        let frames = u32::try_from(DRAINING_LIMIT.as_secs() / gap.as_secs()).unwrap() - 1;
-        let (claimed, took) = claim_timed(frames, gap, window).await;
+        // A figure that only rises was never progress past the first.
+        let rising = (1..=20).map(|step| step * 10).collect();
+        let (claimed, took) = claim_timed(rising, gap, window).await;
+        still_draining(claimed);
+        assert_eq!(took, gap + DRAINING_LIMIT);
+        // Positive control: a drain far longer than the limit that keeps
+        // lowering the figure connects.
+        let falling = (0..20).rev().map(|step| step * 10).collect();
+        let (claimed, took) = claim_timed(falling, gap, window).await;
         assert!(claimed.is_ok(), "{claimed:?}");
-        assert!(took > 2 * window && took < DRAINING_LIMIT, "{took:?}");
+        assert_eq!(took, 21 * gap);
+        assert!(took > 2 * DRAINING_LIMIT);
+    }
+
+    /// One large landing: frames every heartbeat, most repeating the
+    /// figure, which falls one chunk now and then. Waited on as long as
+    /// each fall comes inside the limit.
+    #[tokio::test(start_paused = true)]
+    async fn one_large_landing_falling_chunk_by_chunk_is_waited_on() {
+        let window = Duration::from_secs(10);
+        let heartbeat = Duration::from_secs(5);
+        const CHUNK: u64 = 4 << 20;
+        const SIZE: u64 = 4 << 30;
+        // A chunk handed to the writer every `every` frames, 40 frames.
+        let landing = |every: u64| (0..40).map(|frame| SIZE - frame / every * CHUNK).collect();
+        // Every 50 s: 205 s in all.
+        let (claimed, took) = claim_timed(landing(10), heartbeat, window).await;
+        assert!(claimed.is_ok(), "{claimed:?}");
+        assert_eq!(took, 41 * heartbeat);
+        // Every 65 s: the first frame's figure stands past the limit.
+        let (claimed, took) = claim_timed(landing(13), heartbeat, window).await;
+        still_draining(claimed);
+        assert_eq!(took, heartbeat + DRAINING_LIMIT);
+    }
+
+    /// The tail of a drain: nothing left to hand a writer, the last
+    /// landings still being written, so frames repeat 0. Reaching 0 is
+    /// the last progress; the tail gets `DRAINING_LIMIT` from there.
+    #[tokio::test(start_paused = true)]
+    async fn a_tail_with_nothing_queued_gets_the_limit_from_when_it_reached_zero() {
+        let window = Duration::from_secs(10);
+        let heartbeat = Duration::from_secs(5);
+        let tail = |frames: usize| {
+            let mut drain = vec![4096, 0];
+            drain.extend(std::iter::repeat_n(0, frames));
+            drain
+        };
+        // 0 at 10 s, then ten more frames: answered at 65 s.
+        let (claimed, took) = claim_timed(tail(10), heartbeat, window).await;
+        assert!(claimed.is_ok(), "{claimed:?}");
+        assert_eq!(took, 13 * heartbeat);
+        // A tail that outlasts the limit fails it, 60 s after the 0.
+        let (claimed, took) = claim_timed(tail(20), heartbeat, window).await;
+        let error = still_draining(claimed);
+        assert!(
+            matches!(
+                error,
+                LinkError::StillDraining {
+                    queued_bytes: 0,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(took, 2 * heartbeat + DRAINING_LIMIT);
     }
 
     #[tokio::test(start_paused = true)]
@@ -447,10 +553,10 @@ mod tests {
         let window = Duration::from_secs(10);
         let gap = Duration::from_secs(8);
         // Answered 24 s in, past two windows: each draining frame moved it.
-        assert!(claim_against(2, gap, window).await.is_ok());
+        assert!(claim_against(vec![1, 0], gap, window).await.is_ok());
         // Positive control: the same wait with no draining is late.
         assert!(matches!(
-            claim_against(0, 2 * gap, window).await,
+            claim_against(Vec::new(), 2 * gap, window).await,
             Err(ClaimFailure::Late)
         ));
     }

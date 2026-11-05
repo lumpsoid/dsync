@@ -46,6 +46,7 @@ use crate::body::{Body, BodySender, body_channel};
 use crate::landings::Landings;
 use crate::local_replica::fill;
 use crate::replica_error::ReplicaError;
+use crate::spool_drain::SpoolDrain;
 use crate::write_error::WriteError;
 use crate::writer_pool::{Handed, Pumped, Slot, WriterPool};
 
@@ -209,6 +210,16 @@ impl Spool {
     /// size less what the Lander has read of it so far.
     pub(crate) fn queued_bytes(&self) -> watch::Receiver<u64> {
         self.inner.queued_bytes.subscribe()
+    }
+
+    /// How far this spool still has to go: its queued bytes, and whether
+    /// anything is queued or on a writer.
+    pub(crate) fn drain(&self) -> SpoolDrain {
+        let busy = !self.inner.state().idle();
+        SpoolDrain {
+            queued_bytes: *self.inner.queued_bytes.borrow(),
+            busy,
+        }
     }
 
     /// Takes `body` to a writer or into the spool (see the module), and

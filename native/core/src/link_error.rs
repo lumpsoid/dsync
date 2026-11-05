@@ -52,13 +52,15 @@ pub enum LinkError {
         remote: FormatVersion,
     },
     /// A peer:// listener kept saying it was still draining the claimed
-    /// session for longer than the dialer waits, however often it said
-    /// so. Not a drop: a listener that does this may do it again.
+    /// session, but its `queued_bytes` - the lowest it reported - had not
+    /// fallen for `limit`, however often it said so. Not a drop: a
+    /// listener that does this may do it again.
     #[error(
-        "the far side was still landing the previous session's writes ({queued} queued) \
-         after {limit:?}, the most a peer:// dial waits for that"
+        "the far side was still landing the previous session's writes, \
+         {queued_bytes} bytes queued, and had made no progress for {limit:?}, \
+         the most a peer:// dial waits for that"
     )]
-    StillDraining { limit: Duration, queued: u64 },
+    StillDraining { limit: Duration, queued_bytes: u64 },
     /// A frame or message that broke the protocol after the handshake: a
     /// bug on one side or the other, never a user's configuration.
     #[error("protocol error: {0}")]

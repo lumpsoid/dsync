@@ -594,6 +594,10 @@ impl Replica for LocalReplica {
         Some(LocalReplica::write_stats(self))
     }
 
+    fn spool_drain(&self) -> Option<crate::spool_drain::SpoolDrain> {
+        self.shared.spool().map(|spool| spool.drain())
+    }
+
     fn base(&self) -> &Path {
         self.shared.root.base()
     }

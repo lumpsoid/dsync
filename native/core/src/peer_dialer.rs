@@ -304,7 +304,8 @@ impl PeerDialer {
 
     /// The dialer's half of the preamble: presents `reclaim`, answers the
     /// token issued, within `deadline` (which a draining listener moves,
-    /// up to `peer_preamble::DRAINING_LIMIT`).
+    /// for as long as its queued bytes keep falling inside
+    /// `peer_preamble::DRAINING_LIMIT`).
     async fn claim(
         &self,
         tls: &mut TlsStream<TcpStream>,

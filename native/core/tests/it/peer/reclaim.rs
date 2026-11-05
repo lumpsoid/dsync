@@ -446,21 +446,36 @@ fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
 /// The phone has staged three files to a spooling desktop, its one
 /// writer held on the first, when the link goes dark. Its claim ends
 /// that session, which still lands everything it took before its lock
-/// goes: the claimer meets the lock while the landings are held, and
-/// gets it once the last has landed.
+/// goes, and the claim waits for it - far past `reclaim_wait`, told by
+/// `Draining` frames that bytes are still queued - so the claimer's
+/// lock, and so its scan, starts only after the last landing. A dial
+/// that claims nothing meanwhile meets the held lock at once.
 #[tokio::test]
-async fn a_reclaimed_session_lands_what_it_staged_before_its_lock_goes() {
+async fn a_reclaim_waits_for_the_session_to_land_what_it_staged() {
+    reclaim_while_landing(false).await;
+}
+
+/// The same, with the phone's `take_landed` long poll open when the link
+/// goes dark, as an applier keeps one while a staged copy waits: the
+/// ended session is still joining that request, not yet settling, while
+/// its landings are held - and is waited on all the same.
+#[tokio::test]
+async fn a_reclaim_waits_for_a_session_still_joining_its_take_landed() {
+    reclaim_while_landing(true).await;
+}
+
+async fn reclaim_while_landing(take_landed_open: bool) {
     let room = 1 << 20;
     let far = Tuning {
         writers: 1,
         spool_bytes: room,
         spool_reserve_bytes: 0,
-        // The draining session outlasts any wait; a short one keeps the
-        // claimer's dial quick.
+        // Far below the drain: only the queued bytes keep the claim
+        // waiting.
         reclaim_wait: Duration::from_millis(200),
         ..far_tuning()
     };
-    let mut scene = scene_serving(far, SpoolSetting::On).await;
+    let scene = scene_serving(far, SpoolSetting::On).await;
     let sessions = Arc::new(PeerSessions::new());
     let first = scene
         .connect(&scene.phone, &sessions, spec(scene.root.to_str().unwrap()))
@@ -483,18 +498,46 @@ async fn a_reclaimed_session_lands_what_it_staged_before_its_lock_goes() {
         .unwrap();
     }
     within("a on the writer", hold.until_held(1)).await;
+    // Answers only once a landing finishes, and `a` is held.
+    let mut polling = Box::pin(first.take_landed());
+    if take_landed_open {
+        let sent = tokio::time::timeout(Duration::from_millis(200), &mut polling).await;
+        assert!(sent.is_err(), "take_landed answered with a held: {sent:?}");
+    }
     scene.link.black_hole();
+    drop(polling);
     drop(first);
 
-    let (locked, second) = scene.dial(&scene.phone, &sessions).await;
-    // The claim has ended the dead session, which still holds its lock:
-    // its landings are held.
-    assert_held(locked);
-    assert!(!scene.root.join("b").exists());
-    hold.release();
-    // Ended by the claim, not by its silence limit: that is a minute off.
-    scene.ended().await;
-
+    // Many heartbeats, and many times `reclaim_wait`.
+    let drain = 8 * far.heartbeat;
+    let claiming = scene.connect(&scene.phone, &sessions, spec(scene.root.to_str().unwrap()));
+    tokio::pin!(claiming);
+    let landing = async {
+        tokio::time::sleep(drain).await;
+        // Without the claim: no wait, and the drained session's lock.
+        let (locked, bystander) = scene
+            .dial(&scene.phone, &Arc::new(PeerSessions::new()))
+            .await;
+        assert_held(locked);
+        drop(bystander);
+        assert!(!scene.root.join("a").exists());
+        // `a` lands; `b` goes to the writer and is held there, `c` still
+        // queued.
+        hold.release_one();
+        within("b on the writer", hold.until_arrived(2)).await;
+        tokio::time::sleep(drain).await;
+        assert!(scene.root.join("a").exists());
+        assert!(!scene.root.join("b").exists());
+        hold.release();
+    };
+    tokio::select! {
+        biased;
+        _ = &mut claiming => panic!("the claim was answered while landings were held"),
+        () = landing => {}
+    }
+    let second = within("the claim", claiming).await;
+    // Answered once the session had gone: everything it staged landed,
+    // its spool empty, before the claimer could lock or scan.
     for (name, content) in files {
         assert_eq!(std::fs::read(scene.root.join(name)).unwrap(), content);
     }
@@ -503,6 +546,8 @@ async fn a_reclaimed_session_lands_what_it_staged_before_its_lock_goes() {
         .state()
         .spool(&EntryId::parse(PROFILE).unwrap(), Side::B);
     assert_eq!(files_under(&spool), Vec::<PathBuf>::new());
+    // The dead session let its lock go on the claim, not at its silence
+    // limit: that is a minute off.
     within("lock", second.lock()).await.unwrap();
     within("unlock", second.unlock()).await.unwrap();
     within("close", second.close()).await.unwrap();
