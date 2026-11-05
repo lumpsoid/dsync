@@ -33,7 +33,9 @@ use crate::transport::{
     Liveness, Outbox, READ_BUFFER_BYTES, SilenceLimit, Task, Transport, start_writer,
 };
 use crate::version_handshake::handshake;
-use crate::wire::{self, Answer, DigestItem, Reply, Request, ScanItem, Shown, WireError, WireIo};
+use crate::wire::{
+    self, Answer, DigestItem, Reply, Request, ScanItem, Shown, WireError, WireIo, WireLandings,
+};
 
 /// Serves replicas opened by `open`, one per session.
 ///
@@ -447,6 +449,23 @@ impl<R: Replica> Served<R> {
                         .await;
                 }
             },
+            Request::Stage {
+                path,
+                source,
+                expect,
+            } => match body {
+                Some(body) => replica
+                    .stage(&path, body, source, expect)
+                    .await
+                    .map(|()| Reply::Staged),
+                None => {
+                    return reply(&self.outbox, id, Err(protocol("a stage without its body")))
+                        .await;
+                }
+            },
+            Request::TakeLanded => replica.take_landed().await.map(|landings| {
+                Reply::Landed(WireLandings::sent(landings, |error| self.sent(error)))
+            }),
             Request::Delete { path, expect } => {
                 replica.delete(&path, expect).await.map(|()| Reply::Done)
             }
@@ -656,14 +675,15 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use dsync_domain::{
-        ArchiveCommit, ArchiveFacts, ContentHash, EntryId, FileMeta, FileState, Jobs, Precondition,
-        RelPath, RootFacts, RuleSet, STAGING_DIR, ScanEntry, Side, WriteStats,
+        ArchiveCommit, ContentHash, EntryId, FileMeta, FileState, Jobs, LockFacts, Precondition,
+        RelPath, RootFacts, RuleSet, STAGING_DIR, ScanEntry, Side, SpoolSetting, WriteStats,
     };
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, duplex};
     use tokio::sync::{Notify, Semaphore, oneshot};
     use tokio::task::JoinHandle;
 
     use super::*;
+    use crate::landings::Landings;
     use crate::local_replica::LocalReplica;
     use crate::replica::{DigestedScan, OpenedScan, Reading};
     use crate::replica_lock::{LockError, RunLocks};
@@ -868,7 +888,10 @@ mod tests {
                         spec.side,
                         spec.jobs,
                         Tuning::DEFAULT,
-                        crate::Symlinks::AsRuled,
+                        crate::LocalRules {
+                            symlinks: crate::Symlinks::AsRuled,
+                            spool: SpoolSetting::Off,
+                        },
                     ));
                     async move { Ok(replica) }
                 },
@@ -1559,7 +1582,7 @@ mod tests {
             self.inner.hello().await
         }
 
-        async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+        async fn lock(&self) -> Result<LockFacts, ReplicaError> {
             self.inner.lock().await
         }
 
@@ -1606,6 +1629,24 @@ mod tests {
             self.entered.notify_one();
             let _permit = self.gate.acquire().await;
             self.inner.write(path, body, source, expect).await
+        }
+
+        async fn stage(
+            &self,
+            path: &RelPath,
+            body: Body,
+            source: FileState,
+            expect: Precondition,
+        ) -> Result<(), ReplicaError> {
+            self.inner.stage(path, body, source, expect).await
+        }
+
+        async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+            self.inner.take_landed().await
+        }
+
+        async fn settle(&self) {
+            self.inner.settle().await;
         }
 
         async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {

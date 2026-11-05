@@ -21,7 +21,10 @@ use crate::link_error::LinkError;
 /// 2.0's carried its metadata: a 2.0 request would decode with other bytes
 /// taken for the hash. 4.0's `FileMeta` carries when it was read
 /// (`read_us`), and with it every scan entry, write reply and commit.
-pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(5, 0);
+/// 5.0 moved the scan listings out of their messages into bodies. 6.0
+/// adds `Stage` and `TakeLanded`, and its `Locked` carries the spool's
+/// room beside the archive's facts: a 5.0 peer would read it short.
+pub const PROTOCOL_VERSION: FormatVersion = FormatVersion::new(6, 0);
 
 /// Opens every version frame, so a stream that happens to start with the
 /// version kind byte is still not mistaken for the protocol.
@@ -176,15 +179,16 @@ mod tests {
     const V1_0: FormatVersion = FormatVersion::new(1, 0);
     const V1_3: FormatVersion = FormatVersion::new(1, 3);
     const V2_0: FormatVersion = FormatVersion::new(2, 0);
-    const V5_3: FormatVersion = FormatVersion::new(5, 3);
     const V5_0: FormatVersion = FormatVersion::new(5, 0);
+    const V6_3: FormatVersion = FormatVersion::new(6, 3);
+    const V6_0: FormatVersion = FormatVersion::new(6, 0);
 
     #[tokio::test]
     async fn succeeds_when_both_ends_speak_the_same_version() {
         let (near, far) = shake(PROTOCOL_VERSION, PROTOCOL_VERSION).await;
         assert_eq!(near.unwrap(), PROTOCOL_VERSION);
         assert_eq!(far.unwrap(), PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, V5_0);
+        assert_eq!(PROTOCOL_VERSION, V6_0);
     }
 
     #[tokio::test]
@@ -196,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_later_minor_may_append_to_the_version_frame() {
-        let mut frame = version_frame(V5_3);
+        let mut frame = version_frame(V6_3);
         frame.payload.extend_from_slice(b"more");
         let (near, mut far) = duplex(1024);
         frame.write_to(&mut far).await.unwrap();
@@ -205,7 +209,7 @@ mod tests {
             tokio::time::timeout(DEADLINE, handshake(&mut BufReader::new(read), &mut write))
                 .await
                 .unwrap();
-        assert_eq!(agreed.unwrap(), V5_0);
+        assert_eq!(agreed.unwrap(), V6_0);
     }
 
     #[tokio::test]
@@ -234,6 +238,24 @@ mod tests {
             text.contains("this side speaks 2.0, the far side 1.3"),
             "{text}"
         );
+    }
+
+    /// 6.0's `Locked` and its stage requests would be misread by a 5.x
+    /// peer: it is refused at the handshake, before either.
+    #[tokio::test]
+    async fn a_5_x_peer_is_refused() {
+        let (near, far) = shake(PROTOCOL_VERSION, V5_0).await;
+        assert!(
+            matches!(
+                near,
+                Err(LinkError::VersionMismatch {
+                    local: V6_0,
+                    remote: V5_0
+                })
+            ),
+            "{near:?}"
+        );
+        assert!(far.is_err(), "{far:?}");
     }
 
     #[tokio::test]

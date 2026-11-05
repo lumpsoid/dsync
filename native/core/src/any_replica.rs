@@ -5,11 +5,12 @@
 use std::path::Path;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, FileMeta, FileState, Precondition, RelPath,
+    ArchiveCommit, Bucket, BucketCount, FileMeta, FileState, LockFacts, Precondition, RelPath,
     RootFacts, RuleSet, ScanEntry, WriteStats,
 };
 
 use crate::body::Body;
+use crate::landings::Landings;
 use crate::listing::Listing;
 use crate::local_replica::LocalReplica;
 use crate::remote_replica::RemoteReplica;
@@ -36,7 +37,7 @@ impl Replica for AnyReplica {
         delegate!(self.hello())
     }
 
-    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+    async fn lock(&self) -> Result<LockFacts, ReplicaError> {
         delegate!(self.lock())
     }
 
@@ -81,6 +82,24 @@ impl Replica for AnyReplica {
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         delegate!(self.write(path, body, source, expect))
+    }
+
+    async fn stage(
+        &self,
+        path: &RelPath,
+        body: Body,
+        source: FileState,
+        expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        delegate!(self.stage(path, body, source, expect))
+    }
+
+    async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+        delegate!(self.take_landed())
+    }
+
+    async fn settle(&self) {
+        delegate!(self.settle())
     }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {

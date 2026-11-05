@@ -243,7 +243,16 @@ pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
                 let root = dsync_core::Root::new(root, spec.kind, spec.as_path.clone())
                     .map_err(|e| ReplicaError::Refused(e.to_string()))?;
                 Ok(LocalReplica::open(
-                    root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
+                    root,
+                    state,
+                    spec.entry,
+                    spec.side,
+                    spec.jobs,
+                    tuning,
+                    dsync_core::LocalRules {
+                        symlinks,
+                        spool: dsync_domain::SpoolSetting::Off,
+                    },
                 ))
             })
         }

@@ -54,7 +54,10 @@ pub fn open_local(
                 spec.side,
                 spec.jobs,
                 Tuning::DEFAULT,
-                dsync_core::Symlinks::AsRuled,
+                dsync_core::LocalRules {
+                    symlinks: dsync_core::Symlinks::AsRuled,
+                    spool: dsync_domain::SpoolSetting::Off,
+                },
             ))
         })
     }

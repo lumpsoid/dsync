@@ -42,7 +42,10 @@ fn local(site: &Site, file: &Path) -> LocalReplica {
         spec.side,
         spec.jobs,
         Tuning::DEFAULT,
-        Symlinks::AsRuled,
+        dsync_core::LocalRules {
+            symlinks: Symlinks::AsRuled,
+            spool: dsync_domain::SpoolSetting::Off,
+        },
     )
 }
 

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dsync_core::{LocalReplica, LockError, Replica, ReplicaError, Root, StateDir, Symlinks};
-use dsync_domain::{ArchiveFacts, EntryId, Jobs, RelPath, RootKind, RuleSet, Side, Tuning};
+use dsync_domain::{EntryId, Jobs, LockFacts, RelPath, RootKind, RuleSet, Side, Tuning};
 
 use crate::replica::child::{ChildProcess, READY, wait_for_parent};
 use crate::replica::support::{PROFILE, Site, with_deadline};
@@ -24,7 +24,10 @@ fn installed(root: Root, state: StateDir) -> LocalReplica {
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
-        Symlinks::AsRuled,
+        dsync_core::LocalRules {
+            symlinks: Symlinks::AsRuled,
+            spool: dsync_domain::SpoolSetting::Off,
+        },
     )
 }
 
@@ -48,7 +51,7 @@ fn lock_file(site: &Site) -> PathBuf {
 
 /// The refusal of a root another installation's run holds, at `lock`;
 /// the owner it names.
-fn assert_root_in_use(result: Result<ArchiveFacts, ReplicaError>, lock: &Path) -> String {
+fn assert_root_in_use(result: Result<LockFacts, ReplicaError>, lock: &Path) -> String {
     match result {
         Err(ReplicaError::Lock(LockError::RootInUse { lock: named, owner })) if named == lock => {
             owner

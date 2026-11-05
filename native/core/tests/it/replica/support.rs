@@ -172,7 +172,10 @@ impl Site {
             side,
             Jobs::DEFAULT,
             tuning,
-            dsync_core::Symlinks::AsRuled,
+            dsync_core::LocalRules {
+                symlinks: dsync_core::Symlinks::AsRuled,
+                spool: dsync_domain::SpoolSetting::Off,
+            },
         )
     }
 

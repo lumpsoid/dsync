@@ -36,7 +36,12 @@ fn root(site: &Site, side: Side) -> String {
 }
 
 fn connector(site: &Site) -> Connector {
-    Connector::new(site.state(), None, Tuning::DEFAULT)
+    Connector::new(
+        site.state(),
+        None,
+        Tuning::DEFAULT,
+        dsync_domain::SpoolSetting::Off,
+    )
 }
 
 async fn connect(

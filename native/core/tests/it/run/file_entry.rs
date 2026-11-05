@@ -106,7 +106,10 @@ impl FileEntry {
             side,
             spec.jobs,
             Tuning::DEFAULT,
-            dsync_core::Symlinks::AsRuled,
+            dsync_core::LocalRules {
+                symlinks: dsync_core::Symlinks::AsRuled,
+                spool: dsync_domain::SpoolSetting::Off,
+            },
         )
     }
 
@@ -473,7 +476,12 @@ async fn a_file_where_a_folder_entry_syncs_a_folder_is_refused_before_anything_i
 
 /// A profile run of `entries` over the real connector, batch.
 async fn profile_sync(state: StateDir, entries: &[EffectiveOptions]) -> Vec<EntryOutcome> {
-    let connector = Connector::new(state.clone(), None, Tuning::DEFAULT);
+    let connector = Connector::new(
+        state.clone(),
+        None,
+        Tuning::DEFAULT,
+        dsync_domain::SpoolSetting::Off,
+    );
     let (sender, mut receiver) = mpsc::channel::<ProfileEvent>(8);
     let draining = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
     let run = ProfileRun::new(sender, state, Tuning::DEFAULT, None, ProfileStop::new());

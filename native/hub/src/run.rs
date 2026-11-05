@@ -199,6 +199,7 @@ impl Launch {
             hub.state.clone(),
             facts.home().map(str::to_owned),
             hub.tuning,
+            dsync_domain::SpoolSetting::Off,
         )
         .with_local_addresses(addresses);
         if let Some(identity) = hub.identities().load().map_err(text)? {
@@ -1127,7 +1128,12 @@ mod tests {
         control.attach(stop.clone());
         let state_dir = StateDir::new(dir.path().join("state"));
         let run = ProfileRun::new(events, state_dir.clone(), Tuning::DEFAULT, None, stop);
-        let connector = Connector::new(state_dir, None, Tuning::DEFAULT);
+        let connector = Connector::new(
+            state_dir,
+            None,
+            Tuning::DEFAULT,
+            dsync_domain::SpoolSetting::Off,
+        );
         let second = entries[1].entry_id.clone();
         let mut decider = BatchDecider;
         let executing = run.execute(

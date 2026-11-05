@@ -62,8 +62,13 @@ pub async fn sync(
         .iter()
         .map(|options| RunView::of(name.clone(), options, &addresses, &state))
         .collect();
-    let mut connector = Connector::new(state.clone(), facts.home().map(str::to_owned), tuning)
-        .with_local_addresses(addresses);
+    let mut connector = Connector::new(
+        state.clone(),
+        facts.home().map(str::to_owned),
+        tuning,
+        dsync_domain::SpoolSetting::Off,
+    )
+    .with_local_addresses(addresses);
     if entries.iter().any(dials_a_peer)
         && let Some(identity) = DeviceIdentityStore::new(&state)
             .load()

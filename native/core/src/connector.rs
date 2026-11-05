@@ -14,7 +14,7 @@ use std::io;
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     CertificateExpiry, DeviceId, EffectiveOptions, ExpandError, Locality, Location,
-    ReplicaLocation, ReplicaSpec, Side, Tuning,
+    ReplicaLocation, ReplicaSpec, Side, SpoolSetting, Tuning,
 };
 
 use crate::any_replica::AnyReplica;
@@ -33,6 +33,8 @@ pub struct Connector {
     state: StateDir,
     home: Option<String>,
     tuning: Tuning,
+    /// Whether a local side spools its staged downloads.
+    spool: SpoolSetting,
     local_addresses: Vec<String>,
     peers: Option<PeerDialer>,
     peer_address: Option<PeerAddress>,
@@ -116,13 +118,19 @@ impl ConnectFailure {
 }
 
 impl Connector {
-    /// Local replicas keep their archives and locks in `state`; `home`
-    /// expands a local root's `~`.
-    pub fn new(state: StateDir, home: Option<String>, tuning: Tuning) -> Connector {
+    /// Local replicas keep their archives and locks in `state`, and spool
+    /// as `spool` says; `home` expands a local root's `~`.
+    pub fn new(
+        state: StateDir,
+        home: Option<String>,
+        tuning: Tuning,
+        spool: SpoolSetting,
+    ) -> Connector {
         Connector {
             state,
             home,
             tuning,
+            spool,
             local_addresses: Vec::new(),
             peers: None,
             peer_address: None,
@@ -259,7 +267,10 @@ impl Connector {
             spec.side,
             spec.jobs,
             tuning,
-            Symlinks::AsRuled,
+            crate::LocalRules {
+                symlinks: Symlinks::AsRuled,
+                spool: self.spool,
+            },
         )))
     }
 

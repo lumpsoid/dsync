@@ -15,12 +15,13 @@ use std::future::Future;
 use std::path::Path;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta,
-    FileState, OnDisk, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, WriteStats,
+    ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, FileState, LockFacts,
+    OnDisk, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, WriteStats,
 };
 use tokio::sync::oneshot;
 
 use crate::body::{Body, SourceMoved};
+use crate::landings::Landings;
 use crate::listing::Listing;
 use crate::replica_error::ReplicaError;
 
@@ -38,11 +39,12 @@ pub trait Replica: Send + Sync {
 
     /// Takes this replica's lock (SPEC §4.3) and reads its archive, once,
     /// for the rest of the session: when it last committed, and how many
-    /// files it holds. Refused while another run holds it - fatal for the
-    /// caller (SPEC §11.5 exit 3). Until it succeeds, every operation on
-    /// the archive - a scan, a commit, a compaction - is refused
-    /// [`ReplicaError::NotLocked`].
-    fn lock(&self) -> impl Future<Output = Result<ArchiveFacts, ReplicaError>> + Send;
+    /// files it holds. With them, the room its spool has for
+    /// [`Replica::stage`]: `0` when it has none. Refused while another run
+    /// holds it - fatal for the caller (SPEC §11.5 exit 3). Until it
+    /// succeeds, every operation on the archive - a scan, a commit, a
+    /// compaction - is refused [`ReplicaError::NotLocked`].
+    fn lock(&self) -> impl Future<Output = Result<LockFacts, ReplicaError>> + Send;
 
     /// Makes every commit durable, then releases the lock and the archive
     /// read under it (SPEC §4.3, §8.2). Called on every exit path; the lock
@@ -114,6 +116,34 @@ pub trait Replica: Send + Sync {
         source: FileState,
         expect: Precondition,
     ) -> impl Future<Output = Result<FileMeta, ReplicaError>> + Send;
+
+    /// Takes the whole of `body` into the replica's spool, answers once it
+    /// has ended, and queues a landing onto `path` with exactly what a
+    /// [`Replica::write`] would have had: `source` and `expect`, checked
+    /// as a write checks them when the landing runs. A body that fails or
+    /// is cut short fails the stage, and nothing is queued. The landing's
+    /// own result comes later, from [`Replica::take_landed`].
+    ///
+    /// Refused [`ReplicaError::Refused`] by a replica with no spool (its
+    /// lock's `spool_room` is `0`); its body is still taken whole.
+    fn stage(
+        &self,
+        path: &RelPath,
+        body: Body,
+        source: FileState,
+        expect: Precondition,
+    ) -> impl Future<Output = Result<(), ReplicaError>> + Send;
+
+    /// A long poll: answers once at least one queued landing has
+    /// finished, or at once if none is queued or landing, with every
+    /// landing that finished since the last call and how many are still
+    /// queued. Over the wire it holds one window place while open, never
+    /// a barrier: it would wait on the stages it is there to report.
+    fn take_landed(&self) -> impl Future<Output = Result<Landings, ReplicaError>> + Send;
+
+    /// Waits until nothing is queued or landing. A remote replica's server
+    /// settles its own, so on it this is ready at once.
+    fn settle(&self) -> impl Future<Output = ()> + Send;
 
     /// Deletes the file at `path` (SPEC §7.5), unless it is no longer what
     /// `expect` says the scan saw there: then, like [`Replica::write`], it

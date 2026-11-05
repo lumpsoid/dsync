@@ -58,7 +58,12 @@ impl Roots {
     }
 
     fn connector(&self) -> Connector {
-        Connector::new(self.state(), None, Tuning::DEFAULT)
+        Connector::new(
+            self.state(),
+            None,
+            Tuning::DEFAULT,
+            dsync_domain::SpoolSetting::Off,
+        )
     }
 }
 

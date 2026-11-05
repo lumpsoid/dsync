@@ -50,6 +50,7 @@ fn connector(client: &Host) -> Connector {
         client.state(),
         Some(client.home().to_str().unwrap().to_owned()),
         Tuning::DEFAULT,
+        dsync_domain::SpoolSetting::Off,
     )
     .with_peers(PeerDialer::new(
         client.identity.clone(),

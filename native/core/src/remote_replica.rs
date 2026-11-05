@@ -12,8 +12,10 @@
 //! `hello`, `lock`, `unlock`, `create_root`, all three scan phases,
 //! `remove_empty_dirs` (it reaches ancestors a concurrent write may be
 //! about to write into) and `compact`. Windowed, per path: `read` (holding
-//! its place until its body is over), `write`, `delete`, and `commit`
-//! (under every path its batch carries).
+//! its place until its body is over), `write`, `stage`, `delete`, and
+//! `commit` (under every path its batch carries). Windowed under no path:
+//! `take_landed`, a long poll that holds one place while open - never a
+//! barrier, which would wait on the stages whose landings it reports.
 
 use std::collections::HashMap;
 use std::io;
@@ -22,9 +24,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta,
-    FileState, OnDisk, Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning,
-    WriteStats,
+    ArchiveCommit, Bucket, BucketCount, BucketDigests, ChangedScan, FileMeta, FileState, LockFacts,
+    OnDisk, Precondition, RelPath, ReplicaSpec, RootFacts, RuleSet, ScanEntry, Tuning, WriteStats,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -35,6 +36,7 @@ use crate::body::Body;
 use crate::credit::{self, Credit, Credits};
 use crate::frame::{Frame, FrameError, Kind, MAX_REQUEST_BYTES};
 use crate::inbound::{Dropped, Inbound, Piece};
+use crate::landings::Landings;
 use crate::link_error::LinkError;
 use crate::listing::{Listing, ListingWriter};
 use crate::replica::{
@@ -242,6 +244,71 @@ impl RemoteReplica {
             .send(Frame::new(Kind::Request, id, wire::encode(&request)))
             .await?;
         self.link.answer(answer).await
+    }
+
+    /// One exchange whose request a body follows - a write's or a
+    /// stage's - and its answer.
+    async fn call_with_body(
+        &self,
+        request: Request,
+        mut body: Body,
+        asked: &str,
+    ) -> Result<Reply, ReplicaError> {
+        let (id, mut answer, ()) = self.link.open(|_, reply| (Route::Reply(reply), ()))?;
+        let credit = self.link.credits.open(id);
+        self.link
+            .send(Frame::new(Kind::Request, id, wire::encode(&request)))
+            .await?;
+        // The body goes out while the answer is awaited: a far side that
+        // fails the request early (its folder cannot be made, it has no
+        // spool) answers before
+        // the body is done, and the rest of the body is not worth sending -
+        // nor waiting for credit for.
+        let outbox = &self.link.outbox;
+        let sent = loop {
+            let next = tokio::select! {
+                answered = &mut answer => break Sent::Answered(answered),
+                next = body.next() => next,
+            };
+            let sending = async {
+                match next {
+                    // Only the connection closing stops a request's body: the
+                    // server never cancels one (`Link::route` refuses it).
+                    Ok(Some(bytes)) => outbox
+                        .send_chunk(id, bytes, &credit)
+                        .await
+                        .map(|()| false)
+                        .map_err(|_| OutboxClosed),
+                    Ok(None) => outbox.end(id).await.map(|()| true),
+                    Err(error) => outbox.fail(id, &error.into()).await.map(|()| true),
+                }
+            };
+            let sent = tokio::select! {
+                answered = &mut answer => break Sent::Answered(answered),
+                sent = sending => sent,
+            };
+            match sent {
+                Ok(false) => {}
+                Ok(true) => break Sent::Whole,
+                Err(OutboxClosed) => break Sent::LinkDown,
+            }
+        };
+        let answered = match sent {
+            Sent::Whole => answer.await,
+            Sent::Answered(answered) => {
+                // Ends the body's route on the far side, which drains it.
+                let abandoned =
+                    io::Error::other(format!("the {asked} was answered before its body ended"));
+                let _ = outbox.fail(id, &abandoned).await;
+                answered
+            }
+            Sent::LinkDown => return Err(self.link.failure().into()),
+        };
+        match answered {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_) => Err(self.link.failure().into()),
+        }
     }
 
     /// Opens an exchange whose reply a listing follows.
@@ -536,7 +603,7 @@ impl Replica for RemoteReplica {
         }
     }
 
-    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+    async fn lock(&self) -> Result<LockFacts, ReplicaError> {
         let _all = self.window.barrier().await;
         match self.call(Request::Lock).await? {
             Reply::Locked(facts) => Ok(facts),
@@ -684,73 +751,53 @@ impl Replica for RemoteReplica {
     async fn write(
         &self,
         path: &RelPath,
-        mut body: Body,
+        body: Body,
         source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         let _slot = self.window.enter([path.clone()]).await;
-        let (id, mut answer, ()) = self.link.open(|_, reply| (Route::Reply(reply), ()))?;
-        let credit = self.link.credits.open(id);
         let request = Request::Write {
             path: path.clone(),
             source,
             expect,
         };
-        self.link
-            .send(Frame::new(Kind::Request, id, wire::encode(&request)))
-            .await?;
-        // The body goes out while the answer is awaited: a far side that
-        // fails the write early (its folder cannot be made) answers before
-        // the body is done, and the rest of the body is not worth sending -
-        // nor waiting for credit for.
-        let outbox = &self.link.outbox;
-        let sent = loop {
-            let next = tokio::select! {
-                answered = &mut answer => break Sent::Answered(answered),
-                next = body.next() => next,
-            };
-            let sending = async {
-                match next {
-                    // Only the connection closing stops a write's body: the
-                    // server never cancels one (`Link::route` refuses it).
-                    Ok(Some(bytes)) => outbox
-                        .send_chunk(id, bytes, &credit)
-                        .await
-                        .map(|()| false)
-                        .map_err(|_| OutboxClosed),
-                    Ok(None) => outbox.end(id).await.map(|()| true),
-                    Err(error) => outbox.fail(id, &error.into()).await.map(|()| true),
-                }
-            };
-            let sent = tokio::select! {
-                answered = &mut answer => break Sent::Answered(answered),
-                sent = sending => sent,
-            };
-            match sent {
-                Ok(false) => {}
-                Ok(true) => break Sent::Whole,
-                Err(OutboxClosed) => break Sent::LinkDown,
-            }
-        };
-        let answered = match sent {
-            Sent::Whole => answer.await,
-            Sent::Answered(answered) => {
-                // Ends the body's route on the far side, which drains it.
-                let abandoned = io::Error::other("the write was answered before its body ended");
-                let _ = outbox.fail(id, &abandoned).await;
-                answered
-            }
-            Sent::LinkDown => return Err(self.link.failure().into()),
-        };
-        let reply = match answered {
-            Ok(Ok(reply)) => reply,
-            Ok(Err(error)) => return Err(error.into()),
-            Err(_) => return Err(self.link.failure().into()),
-        };
-        match reply {
+        match self.call_with_body(request, body, "write").await? {
             Reply::Written(landed) => Ok(landed),
             _ => Err(unexpected("write")),
         }
+    }
+
+    async fn stage(
+        &self,
+        path: &RelPath,
+        body: Body,
+        source: FileState,
+        expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        let _slot = self.window.enter([path.clone()]).await;
+        let request = Request::Stage {
+            path: path.clone(),
+            source,
+            expect,
+        };
+        match self.call_with_body(request, body, "stage").await? {
+            Reply::Staged => Ok(()),
+            _ => Err(unexpected("stage")),
+        }
+    }
+
+    async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+        // A place under no path, never a barrier: a barrier waits for
+        // every earlier operation, the stages this poll reports included.
+        let _slot = self.window.enter([]).await;
+        match self.call(Request::TakeLanded).await? {
+            Reply::Landed(landings) => Ok(landings.into()),
+            _ => Err(unexpected("take_landed")),
+        }
+    }
+
+    async fn settle(&self) {
+        // The far side's server settles its own replica.
     }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
@@ -803,7 +850,7 @@ impl Replica for RemoteReplica {
     }
 }
 
-/// How far a write's body got before its answer.
+/// How far a write's or a stage's body got before its answer.
 enum Sent {
     Whole,
     Answered(Result<Answer, oneshot::error::RecvError>),

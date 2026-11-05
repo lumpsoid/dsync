@@ -14,13 +14,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, ChangedDuringSync, FileMeta, FileState, Naming, Precondition,
+    ArchiveCommit, ChangedDuringSync, FileMeta, FileState, LockFacts, Naming, Precondition,
     RelPath, ReplicaSpec, RootFacts, RootKind, RuleSet, ScanEntry, ScanTally, SkippedPath, Stage,
     WriteStats,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::archive_store::ArchiveError;
+use crate::landings::Landings;
 use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::LockError;
 use crate::scanner::UnreadableRoot;
@@ -54,6 +55,16 @@ pub(crate) enum Request {
         source: FileState,
         expect: Precondition,
     },
+    /// Followed by the body's frames under the same id, exactly as a
+    /// [`Request::Write`]; answered with [`Reply::Staged`] once the body
+    /// is taken, its landing reported later by [`Request::TakeLanded`].
+    Stage {
+        path: RelPath,
+        source: FileState,
+        expect: Precondition,
+    },
+    /// A long poll, answered with [`Reply::Landed`].
+    TakeLanded,
     Delete {
         path: RelPath,
         expect: Precondition,
@@ -67,8 +78,9 @@ pub(crate) enum Request {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub(crate) enum Reply {
     Hello(RootFacts),
-    /// The lock is taken; with the archive as its one replay read it.
-    Locked(ArchiveFacts),
+    /// The lock is taken; with the archive as its one replay read it, and
+    /// the room the replica's spool has.
+    Locked(LockFacts),
     Done,
     /// Phase 1's whole-scan facts; its [`ScanItem`]s follow.
     Scan {
@@ -82,6 +94,9 @@ pub(crate) enum Reply {
     /// The file opened; its body follows under the same id.
     Opened,
     Written(FileMeta),
+    /// The stage's body is taken and its landing queued.
+    Staged,
+    Landed(WireLandings),
     /// The lock is released; with the served replica's writer stats, for
     /// the initiator's report (SPEC §17).
     Unlocked(Option<Box<WriteStats>>),
@@ -92,8 +107,49 @@ impl Request {
     pub(crate) fn has_body(&self) -> bool {
         matches!(
             self,
-            Request::Write { .. } | Request::ScanDigests { .. } | Request::ScanBuckets
+            Request::Write { .. }
+                | Request::Stage { .. }
+                | Request::ScanDigests { .. }
+                | Request::ScanBuckets
         )
+    }
+}
+
+/// [`Landings`] as they cross the wire: each failed landing as a
+/// [`WireError`], like a failed write's answer.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub(crate) struct WireLandings {
+    landed: Vec<(RelPath, Result<FileMeta, WireError>)>,
+    queued: u64,
+}
+
+impl WireLandings {
+    /// `landings` as they are sent, each failure through `sent`.
+    pub(crate) fn sent(
+        landings: Landings,
+        mut sent: impl FnMut(ReplicaError) -> WireError,
+    ) -> WireLandings {
+        WireLandings {
+            landed: landings
+                .landed
+                .into_iter()
+                .map(|(path, landed)| (path, landed.map_err(&mut sent)))
+                .collect(),
+            queued: landings.queued,
+        }
+    }
+}
+
+impl From<WireLandings> for Landings {
+    fn from(landings: WireLandings) -> Landings {
+        Landings {
+            landed: landings
+                .landed
+                .into_iter()
+                .map(|(path, landed)| (path, landed.map_err(ReplicaError::from)))
+                .collect(),
+            queued: landings.queued,
+        }
     }
 }
 
@@ -438,8 +494,8 @@ impl WireIo {
 mod tests {
     use super::*;
     use dsync_domain::{
-        CaseFolding, ContentHash, EntryId, FileState, Glob, Jobs, Platform, ReplicaRoot, Side,
-        SkippedReason, Status, Unchanged,
+        ArchiveFacts, CaseFolding, ContentHash, EntryId, FileState, Glob, Jobs, Platform,
+        ReplicaRoot, Side, SkippedReason, Status, Unchanged,
     };
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -491,6 +547,15 @@ mod tests {
                 source: file(1),
                 expect: Precondition::Absent,
             },
+            Request::Stage {
+                path: path("s"),
+                source: file(3),
+                expect: Precondition::File {
+                    size: 1,
+                    mtime_us: 2,
+                },
+            },
+            Request::TakeLanded,
             Request::Delete {
                 path: path("d"),
                 expect: Precondition::File {
@@ -559,13 +624,19 @@ mod tests {
                 archive_path: None,
                 root: ReplicaRoot::Present,
             }),
-            Reply::Locked(ArchiveFacts {
-                last_commit: Some(UNIX_EPOCH + Duration::from_micros(1_700_000_000_123_456)),
-                archived_files: 4,
+            Reply::Locked(LockFacts {
+                archive: ArchiveFacts {
+                    last_commit: Some(UNIX_EPOCH + Duration::from_micros(1_700_000_000_123_456)),
+                    archived_files: 4,
+                },
+                spool_room: 1 << 30,
             }),
-            Reply::Locked(ArchiveFacts {
-                last_commit: None,
-                archived_files: 0,
+            Reply::Locked(LockFacts {
+                archive: ArchiveFacts {
+                    last_commit: None,
+                    archived_files: 0,
+                },
+                spool_room: 0,
             }),
             Reply::Done,
             Reply::Scan {
@@ -585,6 +656,18 @@ mod tests {
             Reply::Buckets,
             Reply::Opened,
             Reply::Written(file(6).meta),
+            Reply::Staged,
+            Reply::Landed(WireLandings {
+                landed: vec![
+                    (path("ok"), Ok(file(7).meta)),
+                    (path("err"), Err(WireError::Changed)),
+                ],
+                queued: 3,
+            }),
+            Reply::Landed(WireLandings {
+                landed: vec![],
+                queued: 0,
+            }),
             Reply::Unlocked(None),
             Reply::Unlocked(Some(Box::new(WriteStats::one_writer()))),
         ] {
@@ -643,6 +726,36 @@ mod tests {
     fn sent(error: ReplicaError) -> WireError {
         let spec = spec("~/Docs", RootKind::Folder);
         WireError::sent(error, &Shown::open(&spec, Path::new("/home/me/Docs")))
+    }
+
+    #[test]
+    fn a_stage_carries_a_body_and_a_take_landed_does_not() {
+        let stage = Request::Stage {
+            path: path("s"),
+            source: file(1),
+            expect: Precondition::Absent,
+        };
+        assert!(stage.has_body());
+        assert!(!Request::TakeLanded.has_body());
+    }
+
+    #[test]
+    fn landings_come_back_with_each_failure_as_the_replica_error_it_was() {
+        let landings = Landings {
+            landed: vec![
+                (path("ok"), Ok(file(1).meta)),
+                (path("err"), Err(ReplicaError::Changed(ChangedDuringSync))),
+            ],
+            queued: 2,
+        };
+        let wire = WireLandings::sent(landings, sent);
+        let back = Landings::from(decode::<WireLandings>(&encode(&wire)).unwrap());
+        assert_eq!(back.queued, 2);
+        let [(ok, Ok(meta)), (err, Err(ReplicaError::Changed(_)))] = back.landed.as_slice() else {
+            panic!("{:?}", back.landed);
+        };
+        assert_eq!((ok, *meta), (&path("ok"), file(1).meta));
+        assert_eq!(err, &path("err"));
     }
 
     #[test]

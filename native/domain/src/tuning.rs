@@ -22,7 +22,9 @@ pub struct Tuning {
     pub commit_batch: usize,
     /// Outstanding requests per replica session (SPEC §4.2 window): the
     /// read-ahead's streams, each holding a slot for its whole body on a
-    /// remote source, plus a lead of eight for commits.
+    /// remote source, plus a lead of eight for commits, plus one for
+    /// `take_landed`'s long poll, which holds its place while open and
+    /// must not eat the commits' lead.
     pub request_window: usize,
     /// Served reads one process sends at once, across every session it
     /// serves (SPEC §4.2): each holds a blocking thread until its body is
@@ -43,6 +45,12 @@ pub struct Tuning {
     /// Buffer a file is read into for sending, one chunk per read (plan
     /// D3: at least 256 KiB, the size the scanner hashes with).
     pub read_buffer_bytes: usize,
+    /// Bytes a replica's spool may hold staged and not yet landed, at most
+    /// (SPEC §4.2's `stage`).
+    pub spool_bytes: u64,
+    /// Free space a spool leaves on its volume: it never takes room the
+    /// rest of the device needs.
+    pub spool_reserve_bytes: u64,
     /// Bytes a replica's writer pool holds received and not yet written,
     /// across every file in flight: past it, whoever feeds a write waits
     /// (the spike's measured 16 MiB).
@@ -103,12 +111,15 @@ impl Tuning {
         writers: 16,
         apply_in_flight: 32,
         commit_batch: 64,
-        request_window: 40 + 8,
+        // The read-ahead's streams, the commits' lead, `take_landed`.
+        request_window: 40 + 8 + 1,
         served_reads: 4 * (40 + 8),
         read_ahead_chunk_bytes: 64 * 1024,
         read_ahead_budget_bytes: 1024 * 1024,
         read_ahead_streams: 32 + 8,
         read_buffer_bytes: 256 * 1024,
+        spool_bytes: 1024 * 1024 * 1024,
+        spool_reserve_bytes: 512 * 1024 * 1024,
         writer_buffer_bytes: 16 * 1024 * 1024,
         heartbeat: Duration::from_secs(5),
         silence_limit: Duration::from_secs(30),
@@ -159,7 +170,7 @@ mod tests {
         assert_eq!(tuning.writers, 16);
         assert_eq!(tuning.apply_in_flight, 32);
         assert_eq!(tuning.commit_batch, 64);
-        assert_eq!(tuning.request_window, 48);
+        assert_eq!(tuning.request_window, 49);
         assert_eq!(tuning.served_reads, 192);
         assert_eq!(tuning.read_ahead_chunk_bytes, 1 << 16);
         assert_eq!(tuning.read_ahead_budget_bytes, 1 << 20);
@@ -168,6 +179,8 @@ mod tests {
         assert!(tuning.request_window > tuning.read_ahead_streams);
         assert!(tuning.read_ahead_chunk_bytes <= tuning.read_ahead_budget_bytes);
         assert_eq!(tuning.read_buffer_bytes, 1 << 18);
+        assert_eq!(tuning.spool_bytes, 1 << 30);
+        assert_eq!(tuning.spool_reserve_bytes, 1 << 29);
         assert_eq!(tuning.writer_buffer_bytes, 1 << 24);
         assert_eq!(tuning.heartbeat, Duration::from_secs(5));
         assert_eq!(tuning.silence_limit, Duration::from_secs(30));

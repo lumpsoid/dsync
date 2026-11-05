@@ -129,7 +129,10 @@ fn replica(side: Side) -> LocalReplica {
         side,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
-        Symlinks::AsRuled,
+        crate::LocalRules {
+            symlinks: Symlinks::AsRuled,
+            spool: dsync_domain::SpoolSetting::Off,
+        },
     )
 }
 

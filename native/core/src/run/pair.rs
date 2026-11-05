@@ -3,7 +3,7 @@
 //! dyn-compatible), so each call picks its side here once.
 
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, FileMeta, FileState, Precondition, RelPath, ReplicaOp, RootFacts,
+    ArchiveCommit, FileMeta, FileState, LockFacts, Precondition, RelPath, ReplicaOp, RootFacts,
     Side, WriteStats,
 };
 
@@ -53,7 +53,7 @@ impl<A: Replica, B: Replica> Pair<'_, A, B> {
         on_side!(self, side, ReplicaOp::Hello, replica => replica.hello())
     }
 
-    pub(crate) async fn lock(&self, side: Side) -> Result<ArchiveFacts, ReplicaError> {
+    pub(crate) async fn lock(&self, side: Side) -> Result<LockFacts, ReplicaError> {
         on_side!(self, side, ReplicaOp::Lock, replica => replica.lock())
     }
 

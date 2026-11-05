@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use dsync_core::{LocalReplica, LockError, RemoteReplica, Replica, ReplicaError};
-use dsync_domain::{ArchiveFacts, EntryId, Jobs, ReplicaSpec, Side, Tuning};
+use dsync_domain::{EntryId, Jobs, LockFacts, ReplicaSpec, Side, Tuning};
 
 use crate::peer::support::{Host, address_of, identity, serve, with_deadline};
 
@@ -24,7 +24,10 @@ fn local(host: &Host, root: &Path, profile: &str) -> LocalReplica {
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
-        dsync_core::Symlinks::AsRuled,
+        dsync_core::LocalRules {
+            symlinks: dsync_core::Symlinks::AsRuled,
+            spool: dsync_domain::SpoolSetting::Off,
+        },
     )
 }
 
@@ -55,7 +58,7 @@ async fn remote(
     dialed.replica
 }
 
-fn assert_folder_in_use(result: Result<ArchiveFacts, ReplicaError>, folder: &Path) {
+fn assert_folder_in_use(result: Result<LockFacts, ReplicaError>, folder: &Path) {
     let folder = std::fs::canonicalize(folder).unwrap();
     assert!(
         matches!(&result, Err(ReplicaError::Lock(LockError::FolderInUse { folder: named, .. }))

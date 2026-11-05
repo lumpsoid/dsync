@@ -64,7 +64,16 @@ impl Opener {
             let root = Root::new(root, spec.kind, spec.as_path.clone())
                 .map_err(|error| ReplicaError::Refused(error.to_string()))?;
             Ok(LocalReplica::open(
-                root, state, spec.entry, spec.side, spec.jobs, tuning, symlinks,
+                root,
+                state,
+                spec.entry,
+                spec.side,
+                spec.jobs,
+                tuning,
+                dsync_core::LocalRules {
+                    symlinks,
+                    spool: dsync_domain::SpoolSetting::Off,
+                },
             ))
         }
     }

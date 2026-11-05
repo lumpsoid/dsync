@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use dsync_core::{LocalReplica, LockError, Replica, ReplicaError};
-use dsync_domain::{ArchiveCommit, ArchiveFacts, ReplicaRoot, RuleSet, Side, Tuning};
+use dsync_domain::{ArchiveCommit, ArchiveFacts, LockFacts, ReplicaRoot, RuleSet, Side, Tuning};
 
 use crate::replica::child::{ChildProcess, READY, wait_for_parent};
 use crate::replica::support::{OTHER_PROFILE, PROFILE, Site, path, recorded, with_deadline};
@@ -36,13 +36,17 @@ async fn lock_reports_no_last_commit_before_the_log_exists() {
     let site = Site::new();
     let replica = site.replica(Side::A);
 
-    let archive = with_deadline("lock", replica.lock()).await.unwrap();
+    let locked = with_deadline("lock", replica.lock()).await.unwrap();
 
+    // Opened with no spool: no room for a stage.
     assert_eq!(
-        archive,
-        ArchiveFacts {
-            last_commit: None,
-            archived_files: 0,
+        locked,
+        LockFacts {
+            archive: ArchiveFacts {
+                last_commit: None,
+                archived_files: 0,
+            },
+            spool_room: 0,
         }
     );
 }
@@ -59,10 +63,10 @@ async fn lock_reports_the_logs_mtime_and_count_once_a_commit_is_written() {
     .await;
     let written = fs::metadata(site.log(Side::A)).unwrap().modified().unwrap();
 
-    let archive = with_deadline("lock", replica.lock()).await.unwrap();
+    let locked = with_deadline("lock", replica.lock()).await.unwrap();
 
     assert_eq!(
-        archive,
+        locked.archive,
         ArchiveFacts {
             last_commit: Some(written),
             archived_files: 1,
@@ -92,8 +96,8 @@ async fn a_missing_root_is_reported_by_hello_and_its_archived_count_by_lock() {
             root_path: site.root(Side::A).to_str().unwrap().to_owned(),
         }
     );
-    let archive = with_deadline("lock", replica.lock()).await.unwrap();
-    assert_eq!(archive.archived_files, 2);
+    let locked = with_deadline("lock", replica.lock()).await.unwrap();
+    assert_eq!(locked.archive.archived_files, 2);
 
     with_deadline("create_root", replica.create_root())
         .await
@@ -266,7 +270,7 @@ async fn lock_replays_what_another_run_committed_since_the_replica_opened() {
 }
 
 /// Asserts `result` is the refusal of a folder in use, naming `folder`.
-pub fn assert_folder_in_use(result: Result<ArchiveFacts, ReplicaError>, folder: &Path) {
+pub fn assert_folder_in_use(result: Result<LockFacts, ReplicaError>, folder: &Path) {
     let folder = std::fs::canonicalize(folder).unwrap();
     assert!(
         matches!(&result, Err(ReplicaError::Lock(LockError::FolderInUse { folder: named, .. }))

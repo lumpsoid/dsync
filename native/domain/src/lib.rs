@@ -36,6 +36,7 @@ mod host_facts;
 pub mod host_port;
 mod jobs;
 mod location;
+mod lock_facts;
 mod mass_delete;
 mod mass_overwrite;
 mod metric_format;
@@ -76,6 +77,7 @@ mod scan_tally;
 mod scan_verdict;
 mod side;
 mod skipped_path;
+mod spool_setting;
 mod ssh_access;
 mod sync_target;
 mod temp_name;
@@ -125,6 +127,7 @@ pub use location::{
     ExpandError, LocalLocation, Locality, Location, LocationError, PeerLocation, SshForm,
     SshLocation, UnixLocation,
 };
+pub use lock_facts::LockFacts;
 pub use mass_delete::{MassDelete, MassDeletePolicy, MassDeletePolicyError, SideDeletes};
 pub use mass_overwrite::{MassOverwrite, MassOverwritePolicy, SideOverwrites};
 pub use metric_format::{format_bytes, format_count, format_duration};
@@ -170,6 +173,7 @@ pub use scan_tally::ScanTally;
 pub use scan_verdict::WalkedTree;
 pub use side::Side;
 pub use skipped_path::{SkippedAt, SkippedPath, SkippedReason, failure_count, unreadable_of};
+pub use spool_setting::SpoolSetting;
 pub use ssh_access::{EmptySshValue, SshAccess, SshCommand, SshOption};
 pub use sync_target::{AdHocTarget, SyncTarget};
 pub use temp_name::{

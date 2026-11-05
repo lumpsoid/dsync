@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dsync_core::{
-    ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan,
+    ArchiveHeader, ArchiveStore, Body, BucketTicket, Decider, DigestTicket, DigestedScan, Landings,
     LinkError, Listing, LocalReplica, OpenedScan, Peek, Reading, RemoteReplica, Replica,
     ReplicaError, ReplicaServer, Run, RunEvent, RunReport, ServedReads, StateDir, Transport,
 };
 use dsync_domain::{
-    Action, Archive, ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Command, EffectiveOptions,
-    FileMeta, FileState, Flags, HostFacts, Location, Platform, Precondition, RelPath,
+    Action, Archive, ArchiveCommit, Bucket, BucketCount, Command, EffectiveOptions, FileMeta,
+    FileState, Flags, HostFacts, Location, LockFacts, Platform, Precondition, RelPath,
     ReplicaLocation, ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, Tuning,
     WriteStats,
 };
@@ -128,7 +128,10 @@ impl Site {
             side,
             spec.jobs,
             tuning,
-            dsync_core::Symlinks::AsRuled,
+            dsync_core::LocalRules {
+                symlinks: dsync_core::Symlinks::AsRuled,
+                spool: dsync_domain::SpoolSetting::Off,
+            },
         )
     }
 
@@ -444,7 +447,7 @@ impl<R: Replica> Replica for Probe<R> {
         self.inner.hello().await
     }
 
-    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+    async fn lock(&self) -> Result<LockFacts, ReplicaError> {
         self.enter(Call::Lock).await?;
         self.inner.lock().await
     }
@@ -499,6 +502,24 @@ impl<R: Replica> Replica for Probe<R> {
             size: reported.unwrap_or(landed.size),
             ..landed
         })
+    }
+
+    async fn stage(
+        &self,
+        path: &RelPath,
+        body: Body,
+        source: FileState,
+        expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        self.inner.stage(path, body, source, expect).await
+    }
+
+    async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+        self.inner.take_landed().await
+    }
+
+    async fn settle(&self) {
+        self.inner.settle().await;
     }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
@@ -572,7 +593,10 @@ where
                     spec.side,
                     spec.jobs,
                     tuning,
-                    dsync_core::Symlinks::AsRuled,
+                    dsync_core::LocalRules {
+                        symlinks: dsync_core::Symlinks::AsRuled,
+                        spool: dsync_domain::SpoolSetting::Off,
+                    },
                 ))
             }
         },

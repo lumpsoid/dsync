@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 
 use dsync_core::{Body, FileOp, Listing, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
-    ArchiveCommit, ArchiveFacts, BucketCount, EntryId, Glob, Precondition, ReplicaRoot, RuleSet,
-    Side, Status, Tuning,
+    ArchiveCommit, ArchiveFacts, BucketCount, EntryId, Glob, LockFacts, Precondition, ReplicaRoot,
+    RuleSet, Side, Status, Tuning,
 };
 
 use crate::replica::hello_lock::assert_folder_in_use;
@@ -67,12 +67,16 @@ async fn hello_and_lock_report_the_far_sides_replica_and_create_root_makes_a_mis
         root.archive_path,
         Some(site.log(Side::B).display().to_string())
     );
-    let archive = with_deadline("lock", served.replica.lock()).await.unwrap();
+    let locked = with_deadline("lock", served.replica.lock()).await.unwrap();
+    // The far side opened it with no spool: no room for a stage.
     assert_eq!(
-        archive,
-        ArchiveFacts {
-            last_commit: None,
-            archived_files: 0,
+        locked,
+        LockFacts {
+            archive: ArchiveFacts {
+                last_commit: None,
+                archived_files: 0,
+            },
+            spool_room: 0,
         }
     );
     with_deadline("create_root", served.replica.create_root())

@@ -18,6 +18,7 @@ mod scan;
 mod served;
 #[cfg(unix)]
 mod ssh;
+mod stage;
 mod support;
 #[cfg(unix)]
 mod unix;

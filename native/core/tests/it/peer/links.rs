@@ -312,7 +312,10 @@ async fn a_local_replica_follows_links_as_its_own_rules_say() {
         Side::A,
         Jobs::DEFAULT,
         Tuning::DEFAULT,
-        Symlinks::AsRuled,
+        dsync_core::LocalRules {
+            symlinks: Symlinks::AsRuled,
+            spool: dsync_domain::SpoolSetting::Off,
+        },
     );
     // The folder is the served session's until it lets go.
     with_deadline("unlock", linked.peer.replica.unlock())

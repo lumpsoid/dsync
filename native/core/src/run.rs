@@ -292,8 +292,8 @@ impl Run {
                 return None;
             }
         }
-        let archive_a = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::A)).await {
-            Ok(archive) => archive,
+        let locked_a = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::A)).await {
+            Ok(locked) => locked,
             Err(error) => {
                 self.events
                     .fail(RunError::replica(Side::A, ReplicaOp::Lock)(error))
@@ -301,8 +301,8 @@ impl Run {
                 return None;
             }
         };
-        let archive_b = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::B)).await {
-            Ok(archive) => archive,
+        let locked_b = match pair.clock.phase(RunPhase::Lock, pair.lock(Side::B)).await {
+            Ok(locked) => locked,
             Err(error) => {
                 self.events
                     .fail(RunError::replica(Side::B, ReplicaOp::Lock)(error))
@@ -313,8 +313,8 @@ impl Run {
         };
         // The header's facts are whole only now: each archive as its lock
         // read it.
-        let info_a = ReplicaInfo::new(root_a, archive_a);
-        let info_b = ReplicaInfo::new(root_b, archive_b);
+        let info_a = ReplicaInfo::new(root_a, locked_a.archive);
+        let info_b = ReplicaInfo::new(root_b, locked_b.archive);
         let found = marker_read(marker).await;
         self.events
             .emit(RunEvent::Replicas {

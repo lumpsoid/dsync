@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, FileState, Jobs,
-    Naming, OnDisk, Platform, Precondition, RelPath, RootFacts, RuleSet, ScanEntry, Side, Tuning,
+    LockFacts, Naming, OnDisk, Platform, Precondition, RelPath, RootFacts, RuleSet, ScanEntry,
+    Side, SpoolSetting, Tuning,
 };
 
 use crate::archive_store::ArchiveStore;
@@ -26,8 +27,10 @@ use crate::body::{Body, BodySender, body_channel};
 use crate::case_folding::probe_case_folding;
 use crate::confinement::Confinement;
 use crate::file_write::Destination;
+use crate::landings::Landings;
 use crate::listing::Listing;
 use crate::local_root::{Located, Root};
+use crate::local_rules::LocalRules;
 use crate::replica::{
     BucketTicket, DigestTicket, DigestedScan, OpenedScan, Reading, Replica, Settled,
 };
@@ -36,7 +39,6 @@ use crate::replica_lock::RunLocks;
 use crate::scan_session::ScanSession;
 use crate::scanner::{Scanner, holds_at, on_disk};
 use crate::state_dir::StateDir;
-use crate::symlinks::Symlinks;
 use crate::writer_pool::WriterPool;
 use dsync_domain::WriteStats;
 
@@ -56,6 +58,8 @@ struct Shared {
     side: Side,
     jobs: Jobs,
     tuning: Tuning,
+    /// Whether [`Replica::stage`] has a spool to take a body into.
+    spool: SpoolSetting,
     session: Mutex<Session>,
     scan: Mutex<ScanPhase>,
     /// Which links this replica goes through, checked on every path.
@@ -90,8 +94,9 @@ enum ScanPhase {
 impl LocalReplica {
     /// The replica at `root` (its text as the location names it is also
     /// the archive header's root), side `side` of `entry_id`, with its
-    /// state in `state`, going through the `symlinks` it may. Touches
-    /// nothing on disk: the archive is read by [`Replica::lock`].
+    /// state in `state`, going through the symlinks and spooling as its
+    /// opener's `rules` say. Touches nothing on disk: the archive is read
+    /// by [`Replica::lock`].
     pub fn open(
         root: Root,
         state: StateDir,
@@ -99,8 +104,9 @@ impl LocalReplica {
         side: Side,
         jobs: Jobs,
         tuning: Tuning,
-        symlinks: Symlinks,
+        rules: LocalRules,
     ) -> LocalReplica {
+        let LocalRules { symlinks, spool } = rules;
         let root = Arc::new(root);
         let confinement = Arc::new(Confinement::new(root.base().to_path_buf(), symlinks));
         LocalReplica {
@@ -113,6 +119,7 @@ impl LocalReplica {
                 side,
                 jobs,
                 tuning,
+                spool,
                 session: Mutex::new(Session::Unlocked),
                 scan: Mutex::new(ScanPhase::Closed),
                 writers: OnceLock::new(),
@@ -216,7 +223,7 @@ impl Replica for LocalReplica {
         .await
     }
 
-    async fn lock(&self) -> Result<ArchiveFacts, ReplicaError> {
+    async fn lock(&self) -> Result<LockFacts, ReplicaError> {
         self.blocking(|shared| {
             let mut session = shared.session();
             // A second lock in one session is refused here as held, like
@@ -228,9 +235,14 @@ impl Replica for LocalReplica {
                 shared.root.text().to_owned(),
                 &shared.tuning,
             )?);
-            let facts = ArchiveFacts {
-                last_commit: store.last_commit()?,
-                archived_files: store.archive().len() as u64,
+            let facts = LockFacts {
+                archive: ArchiveFacts {
+                    last_commit: store.last_commit()?,
+                    archived_files: store.archive().len() as u64,
+                },
+                // No spool yet, whatever the setting: every download is a
+                // write.
+                spool_room: 0,
             };
             // A crashed run's temps (SPEC §7.2): under the lock, nothing
             // else of this replica's is writing.
@@ -400,6 +412,30 @@ impl Replica for LocalReplica {
             .write(path.clone(), body, source, expect)
             .await
     }
+
+    async fn stage(
+        &self,
+        _path: &RelPath,
+        mut body: Body,
+        _source: FileState,
+        _expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        // Taken whole even so, as a write's would be, and dropped: nothing
+        // is written anywhere.
+        while let Ok(Some(_)) = body.next().await {}
+        let why = match self.shared.spool {
+            SpoolSetting::Off => "this replica has no spool to stage into",
+            SpoolSetting::On => "this replica's spool is not built yet",
+        };
+        Err(ReplicaError::Refused(why.into()))
+    }
+
+    async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+        // Nothing is ever staged, so nothing is queued or landing.
+        Ok(Landings::default())
+    }
+
+    async fn settle(&self) {}
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         let path = path.clone();

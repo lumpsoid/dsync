@@ -215,14 +215,19 @@ impl Scene {
         mut watch: impl FnMut(&ProfileEvent) + Send + 'static,
         decider: &mut impl Decider,
     ) -> Profiled {
-        let connector = Connector::new(self.phone.state(), None, tuning)
-            .with_peers(PeerDialer::new(
-                self.phone.identity.clone(),
-                self.phone.store(),
-                tuning,
-                self.sessions.clone(),
-            ))
-            .with_peer_address(address_of(self.link.at));
+        let connector = Connector::new(
+            self.phone.state(),
+            None,
+            tuning,
+            dsync_domain::SpoolSetting::Off,
+        )
+        .with_peers(PeerDialer::new(
+            self.phone.identity.clone(),
+            self.phone.store(),
+            tuning,
+            self.sessions.clone(),
+        ))
+        .with_peer_address(address_of(self.link.at));
         let connects = AtomicUsize::new(0);
         let (sender, mut receiver) = mpsc::channel(16);
         let collecting = tokio::spawn(async move {
