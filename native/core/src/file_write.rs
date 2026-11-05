@@ -86,6 +86,13 @@ impl Destination {
         }
     }
 
+    /// The root's base, which a test's [`crate::LandingHold`] names. Test
+    /// support only, behind the `test-support` feature.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn base(&self) -> &Path {
+        self.root.base()
+    }
+
     /// Forgets `folder`: it was removed ([`crate::Replica::remove_empty_dirs`]),
     /// so a later write under it creates it again rather than trusting it.
     pub(crate) fn forget(&self, folder: &RelPath) {

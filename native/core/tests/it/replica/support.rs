@@ -14,8 +14,8 @@ use dsync_core::{
 };
 use dsync_domain::{
     Action, Archive, ArchiveCommit, BucketCount, ContentHash, EntryId, FileMeta, FileState, Jobs,
-    MTIME_WINDOW_US, Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, Status,
-    Tuning, UnreadablePaths, is_temp_file_name, reconcile, status_list,
+    MTIME_WINDOW_US, Plan, Precondition, RelPath, RootKind, RuleSet, ScanEntry, Side, SpoolSetting,
+    Status, Tuning, UnreadablePaths, is_temp_file_name, reconcile, status_list,
 };
 use tempfile::TempDir;
 
@@ -153,17 +153,28 @@ impl Site {
     }
 
     pub fn replica_with(&self, side: Side, tuning: Tuning) -> LocalReplica {
-        self.replica_at(&self.root(side), PROFILE, side, tuning)
+        self.replica_at(&self.root(side), PROFILE, side, tuning, SpoolSetting::Off)
+    }
+
+    /// `side`'s replica opened with a spool, which its lock starts.
+    pub fn spooled(&self, side: Side, tuning: Tuning) -> LocalReplica {
+        self.replica_at(&self.root(side), PROFILE, side, tuning, SpoolSetting::On)
+    }
+
+    /// `side`'s spool folder: where its lock puts its spool files.
+    pub fn spool(&self, side: Side) -> PathBuf {
+        self.state().spool(&EntryId::parse(PROFILE).unwrap(), side)
     }
 
     /// The replica at `root`, side `side` of `profile`, in this site's
-    /// state dir.
+    /// state dir, spooling as `spool` says.
     pub fn replica_at(
         &self,
         root: &Path,
         profile: &str,
         side: Side,
         tuning: Tuning,
+        spool: SpoolSetting,
     ) -> LocalReplica {
         LocalReplica::open(
             dsync_core::Root::folder(root.to_str().unwrap().to_owned()),
@@ -174,7 +185,7 @@ impl Site {
             tuning,
             dsync_core::LocalRules {
                 symlinks: dsync_core::Symlinks::AsRuled,
-                spool: dsync_domain::SpoolSetting::Off,
+                spool,
             },
         )
     }

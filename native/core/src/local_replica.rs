@@ -16,6 +16,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use tokio::runtime::Handle;
+
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, Bucket, BucketCount, Digested, EntryId, FileMeta, FileState, Jobs,
     LockFacts, Naming, OnDisk, Platform, Precondition, RelPath, RootFacts, RuleSet, ScanEntry,
@@ -38,6 +40,7 @@ use crate::replica_error::{FileOp, ReplicaError};
 use crate::replica_lock::RunLocks;
 use crate::scan_session::ScanSession;
 use crate::scanner::{Scanner, holds_at, on_disk};
+use crate::spool::{self, Spool};
 use crate::state_dir::StateDir;
 use crate::writer_pool::WriterPool;
 use dsync_domain::WriteStats;
@@ -58,27 +61,32 @@ struct Shared {
     side: Side,
     jobs: Jobs,
     tuning: Tuning,
-    /// Whether [`Replica::stage`] has a spool to take a body into.
+    /// Whether a lock starts a spool for [`Replica::stage`] to take bodies
+    /// into.
     spool: SpoolSetting,
     session: Mutex<Session>,
     scan: Mutex<ScanPhase>,
     /// Which links this replica goes through, checked on every path.
     confinement: Arc<Confinement>,
     destination: Arc<Destination>,
-    /// Started by the first write: a replica only read from never starts
-    /// its threads.
-    writers: OnceLock<WriterPool>,
+    /// Started by the first write, or a lock that starts a spool: a
+    /// replica only read from never starts its threads.
+    writers: OnceLock<Arc<WriterPool>>,
 }
 
 /// Whether this replica holds its lock, and with it the archive read under
 /// it: there is no archive without the lock.
 enum Session {
     Unlocked,
-    /// `store` before `lock`: a store dropped without an unlock writes out
-    /// its buffer before the lock that makes the archive this run's goes.
+    /// `spool` first: dropped, it stops its Lander, so no spooled file
+    /// starts landing once the lock is gone. `store` before `lock`: a
+    /// store dropped without an unlock writes out its buffer before the
+    /// lock that makes the archive this run's goes.
     Locked {
+        /// `None` when opened with no spool, or its room is `0`.
+        spool: Option<Arc<Spool>>,
         store: Box<ArchiveStore>,
-        lock: RunLocks,
+        lock: Box<RunLocks>,
     },
 }
 
@@ -138,7 +146,13 @@ impl LocalReplica {
         self.shared
             .writers
             .get()
-            .map_or_else(WriteStats::default, WriterPool::stats)
+            .map_or_else(WriteStats::default, |pool| pool.stats())
+    }
+
+    /// The bytes this session's spool holds staged and not yet handed to a
+    /// writer (SPEC §4.2); `None` with no spool.
+    pub fn spool_queued_bytes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.shared.spool().map(|spool| spool.queued_bytes())
     }
 
     /// Runs `work` against the shared state on the blocking pool. A panic
@@ -178,6 +192,34 @@ impl Shared {
         }
     }
 
+    /// This session's spool, if it has one.
+    fn spool(&self) -> Option<Arc<Spool>> {
+        match &*self.session() {
+            Session::Locked { spool, .. } => spool.clone(),
+            Session::Unlocked => None,
+        }
+    }
+
+    /// Sweeps what an earlier session left in this replica's spool folder
+    /// and, when opened with a spool and its volume has room, starts this
+    /// session's. A folder or writer that cannot be made is no spool:
+    /// every download is then a write, as without one.
+    fn start_spool(&self, runtime: &Handle) -> Option<Arc<Spool>> {
+        let folder = self.state.spool(&self.entry_id, self.side);
+        spool::sweep(&folder);
+        match self.spool {
+            SpoolSetting::Off => return None,
+            SpoolSetting::On => {}
+        }
+        let room = spool::room_at(self.state.path(), &self.tuning);
+        if room == 0 {
+            return None;
+        }
+        let pool = self.writers().ok()?.clone();
+        let spool = Spool::start(&folder, room, self.tuning.read_buffer_bytes, pool, runtime);
+        spool.ok().map(Arc::new)
+    }
+
     fn scan(&self) -> MutexGuard<'_, ScanPhase> {
         self.scan.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -185,7 +227,7 @@ impl Shared {
     /// The writer pool, started on the first write. A start the OS refuses
     /// is retried on the next write; of two racing starts, the loser's
     /// threads end as its pool drops.
-    fn writers(&self) -> Result<&WriterPool, ReplicaError> {
+    fn writers(&self) -> Result<&Arc<WriterPool>, ReplicaError> {
         if let Some(pool) = self.writers.get() {
             return Ok(pool);
         }
@@ -195,7 +237,7 @@ impl Shared {
             self.destination.clone(),
         )
         .map_err(|error| ReplicaError::Halted(format!("starting a writer thread: {error}")))?;
-        Ok(self.writers.get_or_init(|| started))
+        Ok(self.writers.get_or_init(|| Arc::new(started)))
     }
 
     fn file_error(&self, op: FileOp, path: PathBuf) -> impl FnOnce(io::Error) -> ReplicaError {
@@ -224,7 +266,9 @@ impl Replica for LocalReplica {
     }
 
     async fn lock(&self) -> Result<LockFacts, ReplicaError> {
-        self.blocking(|shared| {
+        // The Lander runs on the caller's runtime, not the blocking pool.
+        let runtime = Handle::current();
+        self.blocking(move |shared| {
             let mut session = shared.session();
             // A second lock in one session is refused here as held, like
             // another run's.
@@ -235,31 +279,46 @@ impl Replica for LocalReplica {
                 shared.root.text().to_owned(),
                 &shared.tuning,
             )?);
-            let facts = LockFacts {
-                archive: ArchiveFacts {
-                    last_commit: store.last_commit()?,
-                    archived_files: store.archive().len() as u64,
-                },
-                // No spool yet, whatever the setting: every download is a
-                // write.
-                spool_room: 0,
+            let archive = ArchiveFacts {
+                last_commit: store.last_commit()?,
+                archived_files: store.archive().len() as u64,
             };
-            // A crashed run's temps (SPEC §7.2): under the lock, nothing
-            // else of this replica's is writing.
+            // A crashed run's temps and spool (SPEC §7.2): under the lock,
+            // nothing else of this replica's is writing.
             shared.destination.clear_staging();
-            *session = Session::Locked { store, lock };
+            let spool = shared.start_spool(&runtime);
+            let facts = LockFacts {
+                archive,
+                spool_room: spool.as_ref().map_or(0, |spool| spool.room()),
+            };
+            *session = Session::Locked {
+                spool,
+                store,
+                lock: Box::new(lock),
+            };
             Ok(facts)
         })
         .await
     }
 
     async fn unlock(&self) -> Result<(), ReplicaError> {
+        // Every staged landing finishes before its staging temp and spool
+        // file are swept.
+        if let Some(spool) = self.shared.spool() {
+            spool.settle().await;
+        }
         self.blocking(|shared| {
             // Batched commits are made durable before the lock that says
             // this replica is this session's is given up (SPEC §8.2).
             match std::mem::replace(&mut *shared.session(), Session::Unlocked) {
-                Session::Locked { mut store, lock } => {
+                Session::Locked {
+                    spool,
+                    mut store,
+                    lock,
+                } => {
+                    drop(spool);
                     shared.destination.clear_staging();
+                    spool::sweep(&shared.state.spool(&shared.entry_id, shared.side));
                     let flushed = store.flush();
                     // The archive goes before the lock it was read under.
                     drop(store);
@@ -415,27 +474,35 @@ impl Replica for LocalReplica {
 
     async fn stage(
         &self,
-        _path: &RelPath,
+        path: &RelPath,
         mut body: Body,
-        _source: FileState,
-        _expect: Precondition,
+        source: FileState,
+        expect: Precondition,
     ) -> Result<(), ReplicaError> {
+        if let Some(spool) = self.shared.spool() {
+            return spool.stage(path.clone(), body, source, expect).await;
+        }
         // Taken whole even so, as a write's would be, and dropped: nothing
         // is written anywhere.
         while let Ok(Some(_)) = body.next().await {}
-        let why = match self.shared.spool {
-            SpoolSetting::Off => "this replica has no spool to stage into",
-            SpoolSetting::On => "this replica's spool is not built yet",
-        };
-        Err(ReplicaError::Refused(why.into()))
+        Err(ReplicaError::Refused(
+            "this replica has no spool to stage into".into(),
+        ))
     }
 
     async fn take_landed(&self) -> Result<Landings, ReplicaError> {
-        // Nothing is ever staged, so nothing is queued or landing.
-        Ok(Landings::default())
+        // With no spool nothing is ever staged: nothing queued or landing.
+        match self.shared.spool() {
+            Some(spool) => Ok(spool.take_landed().await),
+            None => Ok(Landings::default()),
+        }
     }
 
-    async fn settle(&self) {}
+    async fn settle(&self) {
+        if let Some(spool) = self.shared.spool() {
+            spool.settle().await;
+        }
+    }
 
     async fn delete(&self, path: &RelPath, expect: Precondition) -> Result<(), ReplicaError> {
         let path = path.clone();
@@ -592,7 +659,7 @@ fn send_file(
 }
 
 /// Reads until `chunk` is full or the file ends; how much was read.
-fn fill(file: &mut File, chunk: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn fill(file: &mut File, chunk: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < chunk.len() {
         match file.read(&mut chunk[filled..]) {

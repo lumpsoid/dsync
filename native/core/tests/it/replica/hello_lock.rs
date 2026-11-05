@@ -5,7 +5,9 @@ use std::fs;
 use std::path::Path;
 
 use dsync_core::{LocalReplica, LockError, Replica, ReplicaError};
-use dsync_domain::{ArchiveCommit, ArchiveFacts, LockFacts, ReplicaRoot, RuleSet, Side, Tuning};
+use dsync_domain::{
+    ArchiveCommit, ArchiveFacts, LockFacts, ReplicaRoot, RuleSet, Side, SpoolSetting, Tuning,
+};
 
 use crate::replica::child::{ChildProcess, READY, wait_for_parent};
 use crate::replica::support::{OTHER_PROFILE, PROFILE, Site, path, recorded, with_deadline};
@@ -280,7 +282,7 @@ pub fn assert_folder_in_use(result: Result<LockFacts, ReplicaError>, folder: &Pa
 }
 
 fn under(site: &Site, root: &Path, profile: &str) -> LocalReplica {
-    site.replica_at(root, profile, Side::A, Tuning::DEFAULT)
+    site.replica_at(root, profile, Side::A, Tuning::DEFAULT, SpoolSetting::Off)
 }
 
 #[tokio::test]

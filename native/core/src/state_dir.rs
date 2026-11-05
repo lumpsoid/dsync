@@ -1,7 +1,8 @@
 //! The state directory and the names of the per-replica files in it
-//! (SPEC §8.3): `<entryId>-<side>.jsonl` (archive), `<entryId>-<side>.lock`
-//! and `<entryId>.run`; the per-folder `folder-<hash>.lock`; the run
-//! history, `runs.jsonl`; and the diagnostics log, `diagnostics.log`.
+//! (SPEC §8.3): `<entryId>-<side>.jsonl` (archive), `<entryId>-<side>.lock`,
+//! `<entryId>.run` and the spool folder `spool/<entryId>-<side>/`; the
+//! per-folder `folder-<hash>.lock`; the run history, `runs.jsonl`; and the
+//! diagnostics log, `diagnostics.log`.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,14 @@ impl StateDir {
     pub fn archive_log(&self, entry_id: &EntryId, side: Side) -> PathBuf {
         self.0
             .join(format!("{}-{side}{ARCHIVE_SUFFIX}", entry_id.as_str()))
+    }
+
+    /// `<state>/spool/<entryId>-<side>/`: the replica's spool, the copies
+    /// it took and has not landed yet, each named by its sequence number.
+    pub fn spool(&self, entry_id: &EntryId, side: Side) -> PathBuf {
+        self.0
+            .join("spool")
+            .join(format!("{}-{side}", entry_id.as_str()))
     }
 
     /// `<state>/<entryId>-<side>.lock`.
@@ -120,6 +129,10 @@ mod tests {
         assert_eq!(
             state.lock(&entry_id, Side::B),
             PathBuf::from(format!("/state/{ID}-b.lock"))
+        );
+        assert_eq!(
+            state.spool(&entry_id, Side::A),
+            PathBuf::from(format!("/state/spool/{ID}-a"))
         );
         assert_eq!(
             state.run_marker(&entry_id),

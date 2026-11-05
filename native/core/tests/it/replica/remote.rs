@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use dsync_core::{Body, FileOp, Listing, LockError, Replica, ReplicaError, Stage, body_channel};
 use dsync_domain::{
     ArchiveCommit, ArchiveFacts, BucketCount, EntryId, Glob, LockFacts, Precondition, ReplicaRoot,
-    RuleSet, Side, Status, Tuning,
+    RuleSet, Side, SpoolSetting, Status, Tuning,
 };
 
 use crate::replica::hello_lock::assert_folder_in_use;
@@ -149,7 +149,13 @@ async fn a_lock_held_on_the_far_side_comes_back_as_held_naming_only_its_file() {
 #[tokio::test]
 async fn a_folder_held_under_another_profile_on_the_far_side_comes_back_as_in_use() {
     let site = Site::new();
-    let other = site.replica_at(&site.root(Side::B), OTHER_PROFILE, Side::A, Tuning::DEFAULT);
+    let other = site.replica_at(
+        &site.root(Side::B),
+        OTHER_PROFILE,
+        Side::A,
+        Tuning::DEFAULT,
+        SpoolSetting::Off,
+    );
     with_deadline("local lock", other.lock()).await.unwrap();
     let served = Served::new(&site, Side::B).await;
     with_deadline("hello", served.replica.hello())

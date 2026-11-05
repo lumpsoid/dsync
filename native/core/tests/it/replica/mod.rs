@@ -16,6 +16,7 @@ mod removal;
 mod root_lock;
 mod scan;
 mod served;
+mod spool;
 #[cfg(unix)]
 mod ssh;
 mod stage;

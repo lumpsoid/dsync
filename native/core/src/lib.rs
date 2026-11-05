@@ -31,6 +31,8 @@ mod frame;
 mod granted_roots;
 mod inbound;
 mod interface_addresses;
+#[cfg(feature = "test-support")]
+mod landing_hold;
 mod landings;
 mod link_error;
 mod listing;
@@ -65,6 +67,7 @@ mod scan_session;
 mod scanner;
 mod served_reads;
 mod session_token;
+mod spool;
 mod ssh_transport;
 mod state_dir;
 mod stored_archive;
@@ -100,6 +103,8 @@ pub use filter_listing::{UnlistableFolder, list_filter_folder, preview_filters_a
 pub use folder_access::{ACCESS_PROBE_NAME, FolderRefused, check_root_access};
 pub use granted_roots::GrantedRoots;
 pub use interface_addresses::interface_addresses;
+#[cfg(feature = "test-support")]
+pub use landing_hold::LandingHold;
 pub use landings::Landings;
 pub use link_error::LinkError;
 pub use listing::Listing;
