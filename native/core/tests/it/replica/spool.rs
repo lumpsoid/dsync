@@ -11,10 +11,16 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dsync_core::{Body, LandingHold, LocalReplica, Replica, ReplicaError, body_channel};
-use dsync_domain::{Precondition, STAGING_DIR, Side, Tuning};
+use dsync_core::{
+    Body, LandingHold, LocalReplica, LockError, RemoteReplica, Replica, ReplicaError, body_channel,
+};
+use dsync_domain::{LockFacts, Precondition, STAGING_DIR, Side, Tuning};
 
-use crate::replica::support::{Site, failing_body, path, source_of, with_deadline};
+use crate::cut_link::CutLink;
+use crate::replica::served::{Served, still_pending};
+use crate::replica::support::{
+    Site, failing_body, path, source_of, temp_files_under, with_deadline,
+};
 
 /// How long a stage, an unlock or a landing that must wait is watched for
 /// finishing anyway. A wait that is not there shows up well within it.
@@ -705,4 +711,130 @@ async fn a_stage_waiting_behind_the_queue_takes_a_writer_freed_once_the_lander_e
     order.sort();
     assert_eq!(order, ["large", "queued"]);
     with_deadline("unlock", replica.unlock()).await.unwrap();
+}
+
+/// Side B served spooled with `tuning` through a link the test can cut,
+/// said hello to and locked, with exactly the room asked for.
+async fn served_spooled(site: &Site, tuning: Tuning) -> (Served, CutLink) {
+    let (served, link) = Served::spooled_through_link(site, Side::B, tuning).await;
+    with_deadline("hello", served.replica.hello())
+        .await
+        .unwrap();
+    let facts = with_deadline("lock", served.replica.lock()).await.unwrap();
+    assert_eq!(facts.spool_room, tuning.spool_bytes, "the volume is short");
+    (served, link)
+}
+
+/// Stages `content` at `name`, new on side B, through the link.
+async fn staged_through(replica: &RemoteReplica, name: &str, content: &[u8]) {
+    let at = path(name);
+    let staging = replica.stage(
+        &at,
+        Body::from_bytes(content.to_vec()),
+        source_of(content, 0o644),
+        Precondition::Absent,
+    );
+    with_deadline(name, staging).await.unwrap();
+}
+
+fn assert_held(locked: Result<LockFacts, ReplicaError>) {
+    assert!(
+        matches!(locked, Err(ReplicaError::Lock(LockError::Held { .. }))),
+        "{locked:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_served_session_cut_off_lands_every_staged_file_before_its_lock_goes() {
+    let site = Site::new();
+    let (served, link) = served_spooled(&site, tuning(1, 1 << 20)).await;
+    let hold = LandingHold::at(&site.root(Side::B));
+    let files: [(&str, &[u8]); 3] = [("a", b"first"), ("b", b"second"), ("c", b"third")];
+    for (name, content) in files {
+        staged_through(&served.replica, name, content).await;
+    }
+    with_deadline("a on the writer", hold.until_held(1)).await;
+    assert_eq!(spool_files(&site), ["0", "1"]);
+
+    link.cut();
+    let Served {
+        replica,
+        mut serving,
+    } = served;
+    drop(replica);
+    let contender = site.replica(Side::B);
+    // Each landing in turn, the lock held by the cut session until the
+    // last has landed.
+    for (landing, (name, _)) in (1..).zip(files) {
+        assert_held(with_deadline("a contended lock", contender.lock()).await);
+        assert!(still_pending(&mut serving).await, "ended before {name}");
+        assert!(!site.file(Side::B, name).exists(), "{name} landed early");
+        hold.release_one();
+        if landing < files.len() as u64 {
+            with_deadline("the next landing", hold.until_arrived(landing + 1)).await;
+        }
+    }
+    with_deadline("the session's end", &mut serving)
+        .await
+        .unwrap()
+        .ok();
+
+    for (name, content) in files {
+        assert_eq!(site.get(Side::B, name), content);
+    }
+    assert_eq!(spool_paths(&site), Vec::<PathBuf>::new());
+    assert_eq!(temp_files_under(&site.root(Side::B)), Vec::<PathBuf>::new());
+    with_deadline("the lock, once landed", contender.lock())
+        .await
+        .unwrap();
+    with_deadline("unlock", contender.unlock()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_served_stage_cut_mid_body_leaves_no_spool_file_and_its_target_untouched() {
+    let site = Site::new();
+    site.put(Side::B, "cut.bin", b"old bytes");
+    let expect = site.expect(Side::B, "cut.bin");
+    let (served, link) = served_spooled(&site, tuning(1, 4 << 20)).await;
+    let hold = LandingHold::at(&site.root(Side::B));
+    staged_through(&served.replica, "busy", b"busy").await;
+    with_deadline("busy on the writer", hold.until_held(1)).await;
+
+    // Twice the body's credit and more, so the far side has taken part of
+    // it - spilling it, its writer being busy - before the last send goes.
+    const CHUNK: usize = 64 * 1024;
+    let content = vec![9u8; 32 * CHUNK];
+    let (sender, body) = body_channel(1);
+    let staging = {
+        let replica = served.replica.clone();
+        let source = source_of(&content, 0o644);
+        tokio::spawn(async move { replica.stage(&path("cut.bin"), body, source, expect).await })
+    };
+    for chunk in content.chunks(CHUNK).take(12) {
+        with_deadline("a chunk", sender.send(chunk.to_vec()))
+            .await
+            .unwrap();
+    }
+    // Positive control: the cut stage is spilling.
+    assert_eq!(spool_files(&site), ["0"]);
+
+    link.cut();
+    let staged = with_deadline("the cut stage", staging).await.unwrap();
+    assert!(staged.is_err(), "{staged:?}");
+    let Served {
+        replica,
+        mut serving,
+    } = served;
+    drop(replica);
+    assert!(still_pending(&mut serving).await, "ended with busy held");
+    hold.release();
+    with_deadline("the session's end", serving)
+        .await
+        .unwrap()
+        .ok();
+
+    assert_eq!(spool_paths(&site), Vec::<PathBuf>::new());
+    assert_eq!(site.get(Side::B, "cut.bin"), b"old bytes");
+    assert_eq!(site.get(Side::B, "busy"), b"busy");
+    assert_eq!(temp_files_under(&site.root(Side::B)), Vec::<PathBuf>::new());
 }

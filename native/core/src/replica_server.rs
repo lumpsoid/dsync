@@ -114,7 +114,9 @@ where
     /// its send refused instead of waiting on it forever; the requests in
     /// flight are joined, never aborted, since a write's handler is what
     /// keeps the lock held until its writer has stopped touching the
-    /// root; and only then the replica, and its lock, are dropped.
+    /// root; every file already staged is landed (`Replica::settle`),
+    /// cancel or not; and only then the replica, and its lock, are
+    /// dropped.
     pub async fn serve_until<Rd, Wr>(
         &self,
         transport: Transport<Rd, Wr>,
@@ -265,6 +267,10 @@ where
             while running.try_join_next().is_some() {}
         }
         while running.join_next().await.is_some() {}
+        // Every file already staged is landed before the lock goes: its
+        // verified bytes are here, so landing them needs no link, and a
+        // landing left half-way would race the next lock holder.
+        served.replica.settle().await;
         // `served` - the replica, its lock and its archive - goes here.
     }
 }

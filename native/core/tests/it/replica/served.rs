@@ -14,10 +14,12 @@ use dsync_core::{
     LinkError, LocalReplica, RemoteReplica, ReplicaError, ReplicaServer, ServedReads, StateDir,
     Transport,
 };
-use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, Tuning};
+use dsync_domain::{EntryId, Jobs, ReplicaSpec, Side, SpoolSetting, Tuning};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
+use crate::cut_link::CutLink;
 use crate::replica::support::{PROFILE, Site, with_deadline};
 
 /// The duplex buffer: small next to a body's credit, so backpressure
@@ -44,6 +46,20 @@ pub fn open_local(
 + Send
 + Sync
 + 'static {
+    open_with(state, Tuning::DEFAULT, SpoolSetting::Off)
+}
+
+/// [`open_local`], with `tuning` and spooling as `spool` says.
+pub fn open_with(
+    state: StateDir,
+    tuning: Tuning,
+    spool: SpoolSetting,
+) -> impl Fn(
+    ReplicaSpec,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<LocalReplica, ReplicaError>> + Send>>
++ Send
++ Sync
++ 'static {
     move |spec: ReplicaSpec| {
         let state = state.clone();
         Box::pin(async move {
@@ -53,10 +69,10 @@ pub fn open_local(
                 spec.entry,
                 spec.side,
                 spec.jobs,
-                Tuning::DEFAULT,
+                tuning,
                 dsync_core::LocalRules {
                     symlinks: dsync_core::Symlinks::AsRuled,
-                    spool: dsync_domain::SpoolSetting::Off,
+                    spool,
                 },
             ))
         })
@@ -111,6 +127,44 @@ impl Served {
             replica: Arc::new(replica),
             serving,
         }
+    }
+
+    /// The replica on `side` of `site`, opened with a spool and `tuning`,
+    /// served over loopback TCP through a relay the test can cut.
+    pub async fn spooled_through_link(
+        site: &Site,
+        side: Side,
+        tuning: Tuning,
+    ) -> (Served, CutLink) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = ReplicaServer::new(
+            open_with(site.state(), tuning, SpoolSetting::On),
+            tuning,
+            ServedReads::new(&tuning),
+        );
+        let link = CutLink::to(listener.local_addr().unwrap()).await;
+        let serving = tokio::spawn(async move {
+            let (far, _) = listener.accept().await.unwrap();
+            let (reader, writer) = far.into_split();
+            server.serve(Transport::new(reader, writer)).await
+        });
+        let near = TcpStream::connect(link.at).await.unwrap();
+        let (reader, writer) = near.into_split();
+        let replica = with_deadline(
+            "connect",
+            RemoteReplica::connect(
+                Transport::new(reader, writer),
+                spec(site, side),
+                &Tuning::DEFAULT,
+            ),
+        )
+        .await
+        .unwrap();
+        let served = Served {
+            replica: Arc::new(replica),
+            serving,
+        };
+        (served, link)
     }
 
     /// Closes the connection in order and waits for the session to end.

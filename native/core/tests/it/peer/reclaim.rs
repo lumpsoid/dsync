@@ -14,11 +14,14 @@ use dsync_core::{
     ReplicaError, body_channel,
 };
 use dsync_domain::{
-    ContentHash, EntryId, FileMeta, FileState, Precondition, RelPath, ReplicaSpec, Tuning,
+    ContentHash, EntryId, FileMeta, FileState, Precondition, RelPath, ReplicaSpec, Side,
+    SpoolSetting, Tuning,
 };
 
 use crate::cut_link::CutLink;
-use crate::peer::support::{Host, Serving, address_of, identity, serve_with, somewhere, spec};
+use crate::peer::support::{
+    Host, PROFILE, Serving, address_of, identity, serve_spooling, somewhere, spec,
+};
 
 const OTHER_ENTRY: &str = "fedcba9876543210fedcba9876543210";
 
@@ -60,6 +63,11 @@ struct Scene {
 }
 
 async fn scene() -> Scene {
+    scene_serving(far_tuning(), SpoolSetting::Off).await
+}
+
+/// [`scene`], the desktop serving with `far` and spooling as `spool` says.
+async fn scene_serving(far: Tuning, spool: SpoolSetting) -> Scene {
     let server = Host::new(identity("desktop"));
     let phone = Host::new(identity("phone"));
     let root = server.root("notes");
@@ -73,7 +81,7 @@ async fn scene() -> Scene {
         &[root.as_path(), photos.as_path()],
     );
     phone.pair(&server.identity, "desktop", somewhere(), &[]);
-    let serving = serve_with(&server, far_tuning()).await;
+    let serving = serve_spooling(&server, far, spool).await;
     let link = CutLink::to(serving.at).await;
     Scene {
         server,
@@ -103,6 +111,19 @@ impl Scene {
         sessions: &Arc<PeerSessions>,
         spec: ReplicaSpec,
     ) -> (Result<(), ReplicaError>, RemoteReplica) {
+        let replica = self.connect(client, sessions, spec).await;
+        let locked = within("lock", replica.lock()).await.map(|_| ());
+        (locked, replica)
+    }
+
+    /// The replica `spec` names, dialled through the relay as `client`
+    /// remembering its sessions in `sessions`, said hello to, not locked.
+    async fn connect(
+        &self,
+        client: &Host,
+        sessions: &Arc<PeerSessions>,
+        spec: ReplicaSpec,
+    ) -> RemoteReplica {
         let dialer = PeerDialer::new(
             client.identity.clone(),
             client.store(),
@@ -121,8 +142,7 @@ impl Scene {
         .unwrap();
         let replica = dialed.replica;
         within("hello", replica.hello()).await.unwrap();
-        let locked = within("lock", replica.lock()).await.map(|_| ());
-        (locked, replica)
+        replica
     }
 
     /// Waits for the listener to report a session ended.
@@ -389,4 +409,101 @@ async fn a_cut_link_fails_at_once_and_a_refusing_one_is_unreachable() {
     locked.unwrap();
     within("unlock", again.unlock()).await.unwrap();
     within("close", again.close()).await.unwrap();
+}
+
+/// What `stage` ships for `content`: its scanned state, read well after
+/// its mtime so the far side trusts it.
+fn staged_source(content: &[u8]) -> FileState {
+    let digest = ring::digest::digest(&ring::digest::SHA256, content);
+    FileState {
+        meta: FileMeta {
+            size: content.len() as u64,
+            mtime_us: 1_704_067_200_000_000,
+            mode: 0o644,
+            read_us: 1_800_000_000_000_000,
+        },
+        hash: ContentHash::from_digest(digest.as_ref().try_into().unwrap()),
+    }
+}
+
+/// Every file anywhere under `dir`; none when it is missing.
+fn files_under(dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            files.extend(files_under(&entry.path()));
+        } else {
+            files.push(entry.path());
+        }
+    }
+    files
+}
+
+/// The phone has staged three files to a spooling desktop, its one
+/// writer held on the first, when the link goes dark. Its claim ends
+/// that session, which still lands everything it took before its lock
+/// goes: the claimer meets the lock while the landings are held, and
+/// gets it once the last has landed.
+#[tokio::test]
+async fn a_reclaimed_session_lands_what_it_staged_before_its_lock_goes() {
+    let room = 1 << 20;
+    let far = Tuning {
+        writers: 1,
+        spool_bytes: room,
+        spool_reserve_bytes: 0,
+        // The draining session outlasts any wait; a short one keeps the
+        // claimer's dial quick.
+        reclaim_wait: Duration::from_millis(200),
+        ..far_tuning()
+    };
+    let mut scene = scene_serving(far, SpoolSetting::On).await;
+    let sessions = Arc::new(PeerSessions::new());
+    let first = scene
+        .connect(&scene.phone, &sessions, spec(scene.root.to_str().unwrap()))
+        .await;
+    let facts = within("lock", first.lock()).await.unwrap();
+    assert_eq!(facts.spool_room, room, "the volume is short");
+    let hold = dsync_core::LandingHold::at(&scene.root);
+    let files: [(&str, &[u8]); 3] = [("a", b"first"), ("b", b"second"), ("c", b"third")];
+    for (name, content) in files {
+        within(
+            name,
+            first.stage(
+                &rel(name),
+                dsync_core::Body::from_bytes(content.to_vec()),
+                staged_source(content),
+                Precondition::Absent,
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    within("a on the writer", hold.until_held(1)).await;
+    scene.link.black_hole();
+    drop(first);
+
+    let (locked, second) = scene.dial(&scene.phone, &sessions).await;
+    // The claim has ended the dead session, which still holds its lock:
+    // its landings are held.
+    assert_held(locked);
+    assert!(!scene.root.join("b").exists());
+    hold.release();
+    // Ended by the claim, not by its silence limit: that is a minute off.
+    scene.ended().await;
+
+    for (name, content) in files {
+        assert_eq!(std::fs::read(scene.root.join(name)).unwrap(), content);
+    }
+    let spool = scene
+        .server
+        .state()
+        .spool(&EntryId::parse(PROFILE).unwrap(), Side::B);
+    assert_eq!(files_under(&spool), Vec::<PathBuf>::new());
+    within("lock", second.lock()).await.unwrap();
+    within("unlock", second.unlock()).await.unwrap();
+    within("close", second.close()).await.unwrap();
 }

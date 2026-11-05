@@ -18,7 +18,9 @@ use dsync_core::{
     resolve_grant,
 };
 use dsync_domain::host_port::PeerAddress;
-use dsync_domain::{EntryId, HostFacts, Jobs, PeerName, Platform, ReplicaSpec, Side, Tuning};
+use dsync_domain::{
+    EntryId, HostFacts, Jobs, PeerName, Platform, ReplicaSpec, Side, SpoolSetting, Tuning,
+};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, ring};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -219,6 +221,11 @@ pub async fn serve(host: &Host) -> Serving {
 /// shared expansion, on this host - counting every call, so a test can
 /// say the factory (and so the filesystem) was never reached.
 pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
+    serve_spooling(host, tuning, SpoolSetting::Off).await
+}
+
+/// [`serve_with`], each replica opened spooling as `spool` says.
+pub async fn serve_spooling(host: &Host, tuning: Tuning, spool: SpoolSetting) -> Serving {
     let listener = bind_peer(IpAddr::from([127, 0, 0, 1]), 0).await.unwrap();
     let at = listener.local_addr().unwrap();
     let opened = Arc::new(AtomicUsize::new(0));
@@ -249,10 +256,7 @@ pub async fn serve_with(host: &Host, tuning: Tuning) -> Serving {
                     spec.side,
                     spec.jobs,
                     tuning,
-                    dsync_core::LocalRules {
-                        symlinks,
-                        spool: dsync_domain::SpoolSetting::Off,
-                    },
+                    dsync_core::LocalRules { symlinks, spool },
                 ))
             })
         }
