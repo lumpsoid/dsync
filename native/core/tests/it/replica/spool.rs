@@ -538,11 +538,18 @@ async fn a_spooled_stage_dropped_mid_body_gives_back_its_entry_room_and_file() {
     }
 
     assert_eq!(*queued.borrow(), 0);
-    // The writer of the half-written file is done with it by the time the
-    // spool settles; until then it may still be closing it.
     hold.release();
     with_deadline("settle", replica.settle()).await;
-    assert_eq!(spool_files(&site), Vec::<String>::new());
+    // The spool's own count gives the room back at the drop. The
+    // half-written file goes when its writer thread is done with it, which
+    // `settle` does not wait for: a file left meanwhile only costs space,
+    // and the next sweep takes it.
+    with_deadline("the half-written file removed", async {
+        while !spool_files(&site).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
     assert_eq!(landed(&replica, 1).await, ["busy"]);
     assert!(!site.file(Side::B, "dropped").exists());
     // Its room is back: a file that needs all of it still spills.
