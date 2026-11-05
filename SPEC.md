@@ -877,3 +877,27 @@ The fresh small-file pass is ~10% slower than on 09-24, inside the link's ~13% d
 **CPU.** The desktop CLI's figures come from its own `--timings` report: 2.1–2.3 ms per MiB on large files, 0.52–0.63 s per 1,500-file fresh pull (~0.4 ms/file) and 0.33–0.35 s per 1,500-file overwrite. The phone app's figures are read from `/proc/<pid>/stat` (user + system) across a whole pass. They include each pass's untimed setup and cleanup syncs, so they are upper bounds: **≤ 22 ms/MiB** on large files (the Dart core took 84–133), ≤ 5.6 s per fresh 1,500-file pull and ≤ 2.5 s per overwrite.
 
 **Memory.** The desktop CLI's peak RSS is 23.5–28.8 MiB per sync, and ~14 MiB for a sync with nothing to do. The phone figure is for the whole Flutter app process, not the core alone: RSS 182–206 MiB, with peak RSS (`VmHWM`) going from 212 to 222 MiB over the three passes.
+
+**Staged downloads on the phone (task ecff0e).** Desktop → phone over `peer://`, phone CLI serving (`agent --serve`, no APK) on the same OnePlus 6, Wi-Fi 5 GHz; fresh pushes into a new, empty root per run, three runs per cell. The 1,500-file tree is the one above (19.4 MiB); the large tree is 25 × ~3.3 MiB. "Shared storage" is `/storage/emulated/0` (FUSE); "block" is `/data/local/tmp`. The gate, measured 2026-11-04 on trunk a0507a9, before staging existed:
+
+| Cell | Apply (3 runs) | Per file | Desktop tx over the apply |
+|---|---|---|---|
+| small → shared storage (FUSE) | 34.6–34.8 s | 23.1 ms | 0.6 MiB/s |
+| small → block | 2.31–2.38 s | 1.55 ms | 8.3 MiB/s |
+| large → shared storage | 2.63–2.80 s | 105–112 ms | 29–32 MiB/s |
+| large → block | 2.53–2.83 s | 101–113 ms | 29–33 MiB/s |
+
+The phone's write-stage means, small → shared storage: create 40.3–41.5 ms, close 5.5, mtime 1.2, rename 318–320; small → block: close 11.4–12.1 ms, rename 8.1–9.0, create 2.1–2.4. Shared storage's per-file cost is the phone's, not the link's: the desktop sends at 0.6 MiB/s of a link that carries ~30.
+
+Staged, measured 2026-11-05 on 69b7701 with the phone serving `agent --serve --spool`, interleaved with trunk a0507a9 (its own `agent --serve`; each arm pairs like with like, the protocol having moved to 6.0) in a rotating order. `Received` is the `received:` mark of the desktop's `--timings` (§17), how far into the apply the last stage answered; spool files is the most a watcher listing the phone's spool saw at once. It sampled every 0.26–0.27 s on average (at most 0.40 s) in small → shared storage, 0.21–0.22 s (at most 0.34 s) in small → block and ~0.15 s in the large cells, so the small cells' peaks are lower bounds, and a large cell's 0 means no spool file lived longer than ~0.15 s (no sample saw one):
+
+| Cell | Trunk apply | Staged apply | Received | Spool files (peak) |
+|---|---|---|---|---|
+| small → shared storage | 35.7–36.5 s | 32.7–34.1 s | **0.78–0.88 s** | 1,462–1,473 |
+| small → block | 2.34–2.42 s | 2.37–2.46 s | 0.91–0.95 s | 915–939 |
+| large → shared storage | 2.51–2.63 s | 2.58–3.22 s | 2.46–3.11 s | 0 |
+| large → block | 2.51–2.76 s | 2.45–2.73 s | 2.39–2.66 s | 0 |
+
+A 1,500-file push onto shared storage finishes its download (the data transfer) in under a second, against ~35 s before. The session is still held until the landings end, ~34 s, because the apply ends with the last landing and its commit, but the link is no longer needed past the download, as the drop tests below show. The phone's write stages stay within ~5% of the gate. On the day, staged ran ~7–9% faster than trunk per write stage, with ranges that do not overlap (cause not isolated) — staged: create 38.9–39.7 ms, close 5.6–5.8, mtime 1.1–1.2, rename 299–314; trunk: create 42.4–43.4, close 5.5–5.9, mtime 1.2, rename 327–335. Large files arrive at link speed with the writers keeping up, so nothing spills to a spool file and the received mark trails the apply by ~0.1 s. One staged large → shared storage run of three took 3.22 s against the gate's 2.63–2.80 s, but its bytes arrived late (received 3.11 s): the link, not the landings, and the link varies here (a smoke run the same day had trunk large → block at 2.95 s).
+
+A dropped link no longer stops the landings. Serving shape: the desktop CLI SIGKILLed 5.5 s into that push (200 files landed, 1,290 spooled): the phone landed all 1,500 within 35 s of the cut and left no temp or spool file; the next push planned 1,372 `commit only` — every file landed but not committed — and no copy or conflict, and the one after nothing. Dialling shape: the phone CLI running `sync --spool`, pulling the same tree onto its shared storage, its Wi-Fi turned off 5.5 s in (195 landed, 1,290 spooled): it landed all 1,500 within 34 s with no link, spent its ten re-dials (§11.3), and ended the entry; with Wi-Fi back, the next run planned 1,372 `commit only` and the one after nothing.
