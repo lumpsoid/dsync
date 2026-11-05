@@ -200,8 +200,17 @@ const over = wire.RunStandingView.over;
 const resumable = wire.RunStandingView.resumable;
 
 const connecting = wire.RunPhaseViewConnecting();
-wire.RunPhaseView reconnecting(int attempt, {int nextInMs = 1000}) =>
-    wire.RunPhaseViewReconnecting(attempt: attempt, nextInMs: n(nextInMs));
+wire.RunPhaseView connectingDraining(int bytes) =>
+    wire.RunPhaseViewConnecting(drainingBytes: n(bytes));
+wire.RunPhaseView reconnecting(
+  int attempt, {
+  int nextInMs = 1000,
+  int? drainingBytes,
+}) => wire.RunPhaseViewReconnecting(
+  attempt: attempt,
+  nextInMs: n(nextInMs),
+  drainingBytes: drainingBytes == null ? null : n(drainingBytes),
+);
 const scanning = wire.RunPhaseViewScanning();
 const applying = wire.RunPhaseViewApplying();
 

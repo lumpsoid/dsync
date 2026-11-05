@@ -153,7 +153,7 @@ impl Host {
     ) -> Result<DialedPeer, PeerDialError> {
         let address = at.map(|at| PeerAddress::new(&at.ip().to_string(), at.port()).unwrap());
         let id = self.paired(label).device_id();
-        self.dialer().dial(&id, address, spec(root)).await
+        self.dialer().dial(&id, address, spec(root), |_| {}).await
     }
 }
 

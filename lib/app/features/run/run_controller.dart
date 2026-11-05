@@ -507,8 +507,11 @@ class SyncRunController {
     List<EntryRun> entries,
     EntryRun? entry,
   ) => switch (phase) {
-    RunConnecting() => const SyncRunConnecting(),
-    RunReconnecting(:final attempt) => SyncRunReconnecting(attempt),
+    RunConnecting(:final drainingBytes) => SyncRunConnecting(
+      drainingBytes: drainingBytes,
+    ),
+    RunReconnecting(:final attempt, :final drainingBytes) =>
+      SyncRunReconnecting(attempt, drainingBytes: drainingBytes),
     RunScanning() => const SyncRunScanning(),
     RunReviewing() => const SyncRunAwaitingDecisions(),
     RunConfirmingDeletes(:final sides) => SyncRunConfirmingDeletes([

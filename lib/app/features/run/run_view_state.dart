@@ -19,17 +19,23 @@ final class SyncRunIdle extends SyncRunPhase {
   const SyncRunIdle();
 }
 
-/// The core is resolving the run and connecting both sides.
+/// The core is resolving the run and connecting both sides. While the
+/// remote's last session finishes its writes, the dial waits on it:
+/// [drainingBytes] is what it still has to land, `null` when it is not.
 final class SyncRunConnecting extends SyncRunPhase {
-  const SyncRunConnecting();
+  const SyncRunConnecting({this.drainingBytes});
+
+  final int? drainingBytes;
 }
 
 /// A peer:// link dropped mid-run and the core is re-dialling it: the
-/// [attempt] just made (from 1). The run is still live and stoppable.
+/// [attempt] just made (from 1); [drainingBytes] as in [SyncRunConnecting].
+/// The run is still live and stoppable.
 final class SyncRunReconnecting extends SyncRunPhase {
-  const SyncRunReconnecting(this.attempt);
+  const SyncRunReconnecting(this.attempt, {this.drainingBytes});
 
   final int attempt;
+  final int? drainingBytes;
 }
 
 /// Both sides are connected and the core is scanning them and reconciling

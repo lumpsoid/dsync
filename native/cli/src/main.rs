@@ -19,7 +19,7 @@ use std::io::{self, Write};
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use dsync_domain::Command;
+use dsync_domain::{Command, SpoolSetting};
 
 use crate::args::{Cli, CliCommand};
 use crate::failure::Failure;
@@ -52,12 +52,21 @@ fn run(cli: Cli, host: &Host) -> u8 {
     let result = runtime.block_on(async {
         match cli.command {
             CliCommand::Sync(args) => {
+                let spool = args.spool();
                 let flags = args.run.into_flags(args.dry_run);
-                sync::sync(Command::Sync, &args.target, flags, host).await
+                sync::sync(Command::Sync, &args.target, flags, spool, host).await
             }
             CliCommand::Status(args) => {
                 let flags = args.run.into_flags(false);
-                sync::sync(Command::Status, &args.target, flags, host).await
+                // A dry run writes nothing, so it has nothing to spool.
+                sync::sync(
+                    Command::Status,
+                    &args.target,
+                    flags,
+                    SpoolSetting::Off,
+                    host,
+                )
+                .await
             }
             CliCommand::Agent(args) => agent::agent(args, host).await,
             CliCommand::Pair(command) => pair::pair(command, host).await,

@@ -432,9 +432,19 @@ ActionResult? _outcome(wire.ResultView? result) => switch (result) {
 };
 
 RunPhase _phase(wire.RunPhaseView phase) => switch (phase) {
-  wire.RunPhaseViewConnecting() => const RunConnecting(),
-  wire.RunPhaseViewReconnecting(:final attempt, :final nextInMs) =>
-    RunReconnecting(attempt: attempt, nextInMs: _n(nextInMs)),
+  wire.RunPhaseViewConnecting(:final drainingBytes) => RunConnecting(
+    drainingBytes: drainingBytes == null ? null : _n(drainingBytes),
+  ),
+  wire.RunPhaseViewReconnecting(
+    :final attempt,
+    :final nextInMs,
+    :final drainingBytes,
+  ) =>
+    RunReconnecting(
+      attempt: attempt,
+      nextInMs: _n(nextInMs),
+      drainingBytes: drainingBytes == null ? null : _n(drainingBytes),
+    ),
   wire.RunPhaseViewScanning() => const RunScanning(),
   wire.RunPhaseViewReviewing(:final planId, :final decisions) => RunReviewing(
     DecisionSummary(

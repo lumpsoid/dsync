@@ -10,7 +10,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use dsync_core::{DiagnosticsLog, ProfileStore, StateDir};
-use dsync_domain::{DirPath, DirRule, HostFacts, StateDirChoice, Tuning};
+use dsync_domain::{DirPath, DirRule, HostFacts, SpoolSetting, StateDirChoice, Tuning};
 use futures_util::FutureExt;
 
 use crate::diagnostics::log_panics_to;
@@ -59,6 +59,18 @@ pub(crate) async fn blocking<T: Send + 'static>(
             Ok(panic) => std::panic::resume_unwind(panic),
             Err(_) => Err("the core shut down mid-command".to_owned()),
         },
+    }
+}
+
+/// Whether this hub's runs and what it serves spool their downloads: on
+/// Android, whose shared storage writes slower than the link brings files
+/// in, so a dropped link would otherwise leave much of a run undone; off
+/// elsewhere. Chosen once per build, never inferred at run time.
+fn spool_setting(android: bool) -> SpoolSetting {
+    if android {
+        SpoolSetting::On
+    } else {
+        SpoolSetting::Off
     }
 }
 
@@ -137,6 +149,7 @@ impl Core {
             profiles,
             device_name,
             tuning: self.tuning,
+            spool: spool_setting(cfg!(target_os = "android")),
             out: self.out.clone(),
             sessions: Sessions::default(),
         };
@@ -153,6 +166,8 @@ pub(crate) struct Hub {
     /// The common name of an identity created here.
     pub device_name: String,
     pub tuning: Tuning,
+    /// Whether a run's own sides and a served root spool their downloads.
+    pub spool: SpoolSetting,
     pub out: Outbox,
     pub sessions: Sessions,
 }
@@ -251,8 +266,16 @@ impl Hub {
 
 #[cfg(test)]
 mod tests {
-    use super::{Handled, blocking, caught};
+    use dsync_domain::SpoolSetting;
+
+    use super::{Handled, blocking, caught, spool_setting};
     use crate::signals::ReplyResult;
+
+    #[test]
+    fn an_android_hub_spools_its_runs_and_what_it_serves_and_no_other_does() {
+        assert_eq!(spool_setting(true), SpoolSetting::On);
+        assert_eq!(spool_setting(false), SpoolSetting::Off);
+    }
 
     #[tokio::test]
     async fn a_command_that_panics_is_answered_failed() {

@@ -45,6 +45,12 @@ pub enum ProfileEvent {
         after: Duration,
         cause: ReconnectCause,
     },
+    /// A `peer://` side's dial waits while the session it claims - its
+    /// dropped link's - finishes its writes: `queued_bytes` are still to
+    /// be handed to its writers. 0 is not done: its last landings may
+    /// still be on them. Comes between the entry's `EntryConnecting` or
+    /// `EntryReconnecting` and what ends that connect.
+    EntryDraining { entry: usize, queued_bytes: u64 },
     /// One event of the entry's run, as the run emitted it.
     Entry { entry: usize, event: RunEvent },
     /// How the entry ended; one for every entry, those never started

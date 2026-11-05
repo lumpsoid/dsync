@@ -106,3 +106,74 @@ fn devices_paired_through_the_commands_sync_over_peer_until_revoked() {
         agent.stderr()
     );
 }
+
+/// `sync --spool` against `agent --serve --spool`: both ends spool what
+/// they download, and the run converges as a plain one does, its JSON
+/// progress counting what was received.
+#[test]
+fn a_spooled_sync_against_a_spooling_agent_converges() {
+    let (remote, local) = (Site::new(), Site::new());
+    let agent = remote.spawn(&[
+        "agent",
+        "--serve",
+        "--spool",
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        "0",
+    ]);
+    let serving = agent.stderr_line(|line| line.contains("serving paired devices on"), STARTUP);
+    pair(&remote, &local, served_port(&serving));
+    let shared = remote.root("shared");
+    remote.run(&["pair", "grant", "phone", &shared]).exits(0);
+    remote.write("shared/from-remote.txt", "from remote");
+    local.root("mine");
+    local.write("mine/top.txt", "from local");
+    local.write("mine/notes/deep.txt", "nested");
+
+    let peer = format!("peer://desktop:{shared}");
+    let finished = local.run(&[
+        "sync",
+        &local.arg("mine"),
+        &peer,
+        "--batch",
+        "--json",
+        "--spool",
+    ]);
+    finished.exits(0);
+    assert_eq!(remote.read("shared/top.txt"), "from local");
+    assert_eq!(remote.read("shared/notes/deep.txt"), "nested");
+    assert_eq!(local.read("mine/from-remote.txt"), "from remote");
+    let progress: Vec<serde_json::Value> = finished
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|line| line["type"] == "progress")
+        .collect();
+    let last = progress.last().expect("a progress line");
+    assert!(
+        progress.iter().all(|line| line["received"].is_u64()),
+        "{progress:?}"
+    );
+    assert_eq!(last["received"], last["total"], "{progress:?}");
+    assert_eq!(last["completed"], last["total"], "{progress:?}");
+
+    // A second run finds nothing to do: both ends agree.
+    let again = local.run(&[
+        "sync",
+        &local.arg("mine"),
+        &peer,
+        "--batch",
+        "--json",
+        "--spool",
+    ]);
+    again.exits(0);
+    assert!(
+        !again
+            .stdout
+            .lines()
+            .any(|line| line.contains("\"type\":\"action\"")),
+        "{}",
+        again.stdout
+    );
+}

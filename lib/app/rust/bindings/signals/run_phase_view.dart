@@ -50,20 +50,33 @@ abstract class RunPhaseView {
 
 @immutable
 class RunPhaseViewConnecting extends RunPhaseView {
-  const RunPhaseViewConnecting(
-  ) : super();
+  const RunPhaseViewConnecting({
+    this.drainingBytes,
+  }) : super();
 
   static RunPhaseViewConnecting load(BinaryDeserializer deserializer) {
     deserializer.increaseContainerDepth();
     final instance = RunPhaseViewConnecting(
+      drainingBytes: TraitHelpers.deserializeOptionU64(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
   }
 
+  final Uint64? drainingBytes;
+
+  RunPhaseViewConnecting copyWith({
+    Uint64? Function()? drainingBytes,
+  }) {
+    return RunPhaseViewConnecting(
+      drainingBytes: drainingBytes == null ? this.drainingBytes : drainingBytes(),
+    );
+  }
+
   void serialize(BinarySerializer serializer) {
     serializer.increaseContainerDepth();
     serializer.serializeVariantIndex(0);
+    TraitHelpers.serializeOptionU64(drainingBytes, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -72,11 +85,12 @@ class RunPhaseViewConnecting extends RunPhaseView {
     if (identical(this, other)) return true;
     if (other.runtimeType != runtimeType) return false;
 
-    return other is RunPhaseViewConnecting;
+    return other is RunPhaseViewConnecting
+      && drainingBytes == other.drainingBytes;
   }
 
   @override
-  int get hashCode => runtimeType.hashCode;
+  int get hashCode => drainingBytes.hashCode;
 
   @override
   String toString() {
@@ -84,6 +98,7 @@ class RunPhaseViewConnecting extends RunPhaseView {
 
     assert(() {
       fullString = '$runtimeType('
+        'drainingBytes: $drainingBytes'
         ')';
       return true;
     }());
@@ -97,6 +112,7 @@ class RunPhaseViewReconnecting extends RunPhaseView {
   const RunPhaseViewReconnecting({
     required this.attempt,
     required this.nextInMs,
+    this.drainingBytes,
   }) : super();
 
   static RunPhaseViewReconnecting load(BinaryDeserializer deserializer) {
@@ -104,6 +120,7 @@ class RunPhaseViewReconnecting extends RunPhaseView {
     final instance = RunPhaseViewReconnecting(
       attempt: deserializer.deserializeUint32(),
       nextInMs: deserializer.deserializeUint64(),
+      drainingBytes: TraitHelpers.deserializeOptionU64(deserializer),
     );
     deserializer.decreaseContainerDepth();
     return instance;
@@ -111,14 +128,17 @@ class RunPhaseViewReconnecting extends RunPhaseView {
 
   final int attempt;
   final Uint64 nextInMs;
+  final Uint64? drainingBytes;
 
   RunPhaseViewReconnecting copyWith({
     int? attempt,
     Uint64? nextInMs,
+    Uint64? Function()? drainingBytes,
   }) {
     return RunPhaseViewReconnecting(
       attempt: attempt ?? this.attempt,
       nextInMs: nextInMs ?? this.nextInMs,
+      drainingBytes: drainingBytes == null ? this.drainingBytes : drainingBytes(),
     );
   }
 
@@ -127,6 +147,7 @@ class RunPhaseViewReconnecting extends RunPhaseView {
     serializer.serializeVariantIndex(1);
     serializer.serializeUint32(attempt);
     serializer.serializeUint64(nextInMs);
+    TraitHelpers.serializeOptionU64(drainingBytes, serializer);
     serializer.decreaseContainerDepth();
   }
 
@@ -137,13 +158,15 @@ class RunPhaseViewReconnecting extends RunPhaseView {
 
     return other is RunPhaseViewReconnecting
       && attempt == other.attempt
-      && nextInMs == other.nextInMs;
+      && nextInMs == other.nextInMs
+      && drainingBytes == other.drainingBytes;
   }
 
   @override
   int get hashCode => Object.hash(
         attempt,
         nextInMs,
+        drainingBytes,
       );
 
   @override
@@ -153,7 +176,8 @@ class RunPhaseViewReconnecting extends RunPhaseView {
     assert(() {
       fullString = '$runtimeType('
         'attempt: $attempt, '
-        'nextInMs: $nextInMs'
+        'nextInMs: $nextInMs, '
+        'drainingBytes: $drainingBytes'
         ')';
       return true;
     }());

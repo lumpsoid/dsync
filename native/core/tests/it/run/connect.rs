@@ -13,6 +13,7 @@ use dsync_domain::{
     Command, EffectiveOptions, Flags, HostFacts, Location, PeerName, Platform, ReplicaLocation,
     ReplicaRoot, RunFlags, Side, Tuning,
 };
+use tokio::sync::mpsc::unbounded_channel;
 
 use crate::run::support::{Site, serve, with_deadline};
 
@@ -48,9 +49,12 @@ async fn connect(
     connector: &Connector,
     options: &EffectiveOptions,
 ) -> Result<(AnyReplica, AnyReplica), ConnectError> {
-    with_deadline("connect", connector.connect(options))
-        .await
-        .map(|connected| (connected.a, connected.b))
+    with_deadline(
+        "connect",
+        connector.connect(options, &unbounded_channel().0),
+    )
+    .await
+    .map(|connected| (connected.a, connected.b))
 }
 
 fn local_root(replica: &AnyReplica) -> Option<String> {
@@ -129,7 +133,7 @@ async fn a_host_absent_from_the_local_addresses_is_reached_over_ssh() {
     let connected = connector(&site)
         .with_local_addresses(vec!["elsewhere".to_owned()])
         .with_ssh_program("false")
-        .connect(&options)
+        .connect(&options, &unbounded_channel().0)
         .await;
     assert!(connected.is_ok());
 }
@@ -160,12 +164,13 @@ async fn connect_serving(
     tokio::task::JoinHandle<Result<(), LinkError>>,
 ) {
     let connector = connector(site);
+    let (draining, _) = unbounded_channel();
     let serving = async {
         let (stream, _) = listener.accept().await.unwrap();
         Session(serve(site, stream))
     };
     let (connected, Session(session)) = with_deadline("connect", async {
-        tokio::join!(connector.connect(options), serving)
+        tokio::join!(connector.connect(options, &draining), serving)
     })
     .await;
     (

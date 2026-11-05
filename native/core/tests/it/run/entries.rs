@@ -21,6 +21,7 @@ use dsync_domain::{
     Side, Tuning,
 };
 use tempfile::TempDir;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{Notify, Semaphore, mpsc};
 
 use crate::run::support::{Call, Fault, Probe, with_deadline};
@@ -104,9 +105,10 @@ type Connecting<A, B> = Result<(A, B, Vec<PeerContact>), ConnectError>;
 async fn connect(
     connector: &Connector,
     options: &EffectiveOptions,
+    draining: UnboundedSender<u64>,
 ) -> Connecting<AnyReplica, AnyReplica> {
     connector
-        .connect(options)
+        .connect(options, &draining)
         .await
         .map(|connected| (connected.a, connected.b, connected.peers))
 }
@@ -157,7 +159,7 @@ async fn run_profile<'o, C, F, A, B>(
     decider: &mut impl Decider,
 ) -> Profiled
 where
-    C: FnMut(&'o EffectiveOptions) -> F,
+    C: FnMut(&'o EffectiveOptions, UnboundedSender<u64>) -> F,
     F: Future<Output = Connecting<A, B>>,
     A: Replica,
     B: Replica,
@@ -184,11 +186,57 @@ async fn sync(roots: &Roots, entries: &[EffectiveOptions]) -> Profiled {
     run_profile(
         roots,
         ProfileStop::new(),
-        |options| connect(&connector, options),
+        |options, draining| connect(&connector, options, draining),
         entries,
         &mut BatchDecider,
     )
     .await
+}
+
+/// What a dial sends of a draining far side goes out as the entry's
+/// `EntryDraining`, in order, between its connecting and connected.
+#[tokio::test]
+async fn a_connects_drain_figures_go_out_as_the_entrys_draining_events() {
+    let roots = Roots::new();
+    let pair = roots.pair(0);
+    let entries = options(std::slice::from_ref(&pair), Flags::default());
+    let connector = roots.connector();
+    let profiled = run_profile(
+        &roots,
+        ProfileStop::new(),
+        |options, draining: UnboundedSender<u64>| {
+            for queued_bytes in [300, 0] {
+                draining.send(queued_bytes).unwrap();
+            }
+            connect(&connector, options, draining)
+        },
+        &entries,
+        &mut BatchDecider,
+    )
+    .await;
+    assert_eq!(profiled.exit_code(), 0);
+    let connecting: Vec<String> = profiled
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ProfileEvent::EntryConnecting { entry } => Some(format!("connecting {entry}")),
+            ProfileEvent::EntryDraining {
+                entry,
+                queued_bytes,
+            } => Some(format!("draining {entry} {queued_bytes}")),
+            ProfileEvent::EntryConnected { entry, .. } => Some(format!("connected {entry}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        connecting,
+        [
+            "connecting 0",
+            "draining 0 300",
+            "draining 0 0",
+            "connected 0"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -303,7 +351,7 @@ async fn the_delete_guard_judges_each_entry_on_its_own() {
     let profiled = run_profile(
         &roots,
         ProfileStop::new(),
-        |options| connect(&connector, options),
+        |options, draining| connect(&connector, options, draining),
         &entries,
         &mut declining,
     )
@@ -353,9 +401,9 @@ async fn sides_nested_through_a_symlink_are_refused_before_any_entry() {
     let profiled = run_profile(
         &roots,
         ProfileStop::new(),
-        |options| {
+        |options, draining| {
             calls.fetch_add(1, Ordering::SeqCst);
-            connect(&connector, options)
+            connect(&connector, options, draining)
         },
         &entries,
         &mut BatchDecider,
@@ -390,7 +438,7 @@ async fn an_unreachable_transport_leaves_the_rest_unrun() {
     let profiled = run_profile(
         &roots,
         ProfileStop::new(),
-        |options| {
+        |options, draining| {
             let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
             let connector = &connector;
             async move {
@@ -400,7 +448,7 @@ async fn an_unreachable_transport_leaves_the_rest_unrun() {
                         failure: ConnectFailure::Link(LinkError::Closed),
                     });
                 }
-                connect(connector, options).await
+                connect(connector, options, draining).await
             }
         },
         &entries,
@@ -478,11 +526,11 @@ async fn a_stop_during_an_entry_finishes_it_and_starts_no_other() {
     let running = run_profile(
         &roots,
         stop.clone(),
-        |options| {
+        |options, draining| {
             let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
             let (connector, scanning, gate) = (&connector, scanning.clone(), gate.clone());
             async move {
-                let (a, b, peers) = connect(connector, options).await?;
+                let (a, b, peers) = connect(connector, options, draining).await?;
                 let (a, _) = Probe::with_hook(
                     a,
                     Arc::new(move |call: &Call| {
@@ -532,12 +580,12 @@ async fn a_stop_while_an_entry_connects_ends_the_profile_promptly() {
     let running = run_profile(
         &roots,
         stop.clone(),
-        |options| {
+        |options, draining| {
             let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
             let (connector, connecting) = (&connector, connecting.clone());
             async move {
                 if first {
-                    return connect(connector, options).await;
+                    return connect(connector, options, draining).await;
                 }
                 // A dial that never answers.
                 connecting.notify_one();

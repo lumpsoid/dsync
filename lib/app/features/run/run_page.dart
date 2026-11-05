@@ -775,6 +775,39 @@ class _StageRow extends StatelessWidget {
   }
 }
 
+/// A dial's [label], and under it, while the dial waits on the remote's
+/// last session to finish its writes, what that session has left.
+class _Dialling extends StatelessWidget {
+  const _Dialling(this.label, {required this.drainingBytes});
+
+  final Text label;
+  final int? drainingBytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = drainingBytes;
+    if (bytes == null) return label;
+    // Rounded up, so a figure short of a MiB is not "0 MiB"; at 0 the
+    // remote's last landings may still be being written, so no figure.
+    final mib = (bytes + _mib - 1) ~/ _mib;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        label,
+        Text(
+          mib == 0
+              ? 'The remote is finishing its writes'
+              : 'The remote is finishing its writes ($mib MiB left)',
+          key: const Key('run-draining'),
+        ),
+      ],
+    );
+  }
+
+  static const _mib = 1 << 20;
+}
+
 /// The strip's text slot: the current stage in one line, or the run's end.
 class _StageText extends StatelessWidget {
   const _StageText(this.state);
@@ -786,10 +819,16 @@ class _StageText extends StatelessWidget {
     final theme = Theme.of(context);
     return switch (state.phase) {
       SyncRunIdle() => const SizedBox.shrink(),
-      SyncRunConnecting() => const Text('Connecting…'),
-      SyncRunReconnecting(:final attempt) => Text(
-        'Connection lost — reconnecting ($attempt)',
-        key: const Key('run-reconnecting'),
+      SyncRunConnecting(:final drainingBytes) => _Dialling(
+        const Text('Connecting…'),
+        drainingBytes: drainingBytes,
+      ),
+      SyncRunReconnecting(:final attempt, :final drainingBytes) => _Dialling(
+        Text(
+          'Connection lost — reconnecting ($attempt)',
+          key: const Key('run-reconnecting'),
+        ),
+        drainingBytes: drainingBytes,
       ),
       SyncRunScanning() => Text(
         state.dryRun

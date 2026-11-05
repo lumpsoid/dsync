@@ -8,14 +8,15 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use dsync_core::{
-    BatchDecider, Connector, DeviceIdentityStore, DryRunDecider, PairedDeviceStore, PeerDialer,
-    PeerSessions, ProfileEvent, ProfileRun, ProfileStop, ProfileStore, RunEvent, StateDir,
-    interface_addresses,
+    AnyReplica, BatchDecider, ConnectError, Connector, DeviceIdentityStore, DryRunDecider,
+    PairedDeviceStore, PeerContact, PeerDialer, PeerSessions, ProfileEvent, ProfileRun,
+    ProfileStop, ProfileStore, RunEvent, StateDir, interface_addresses,
 };
 use dsync_domain::{
     AdHocTarget, Command, DirRule, EffectiveOptions, Flags, Location, Mode, ReplicaLocation,
-    RunFlags, Side, StateDirChoice, SyncTarget, Tuning,
+    RunFlags, Side, SpoolSetting, StateDirChoice, SyncTarget, Tuning,
 };
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, watch};
 
 use crate::failure::Failure;
@@ -29,12 +30,13 @@ use crate::stop::{STOP_DEADLINE, StopSequence, exit_process, interrupt_note, os_
 /// within the apply's stated bound when output stalls.
 const EVENT_BUFFER: usize = 256;
 
-/// Runs `sync`/`status` over `positionals` and `flags`, returning the exit
-/// code.
+/// Runs `sync`/`status` over `positionals` and `flags`, a side it opens
+/// itself spooling as `spool` says, returning the exit code.
 pub async fn sync(
     command: Command,
     positionals: &[String],
     flags: Flags,
+    spool: SpoolSetting,
     host: &Host,
 ) -> Result<u8, Failure> {
     let facts = &host.facts;
@@ -66,7 +68,7 @@ pub async fn sync(
         state.clone(),
         facts.home().map(str::to_owned),
         tuning,
-        dsync_domain::SpoolSetting::Off,
+        spool,
     )
     .with_local_addresses(addresses);
     if entries.iter().any(dials_a_peer)
@@ -132,7 +134,7 @@ pub async fn sync(
         match flags.mode {
             Mode::DryRun => {
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut DryRunDecider,
                 )
@@ -140,7 +142,7 @@ pub async fn sync(
             }
             Mode::Batch => {
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut BatchDecider,
                 )
@@ -153,7 +155,7 @@ pub async fn sync(
                     shown,
                 );
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut decider,
                 )
@@ -295,6 +297,17 @@ fn local_addresses() -> Result<Vec<String>, Failure> {
     Ok(addresses.iter().map(ToString::to_string).collect())
 }
 
+/// Both sides of `options` as the profile run takes them, what a draining
+/// far side has left to land sent to `draining`.
+async fn connect(
+    connector: &Connector,
+    options: &EffectiveOptions,
+    draining: UnboundedSender<u64>,
+) -> Result<(AnyReplica, AnyReplica, Vec<PeerContact>), ConnectError> {
+    let connected = connector.connect(options, &draining).await?;
+    Ok((connected.a, connected.b, connected.peers))
+}
+
 /// Renders every entry's events as the profile run produces them, counting
 /// each `Plan` event so the interactive decider can wait for its own -
 /// entry 2's prompt must never precede entry 2's plan, which a plain
@@ -330,6 +343,7 @@ async fn show<O: Write, E: Write>(
                 cause,
                 ..
             } => renderer.reconnecting(attempt, after, &cause),
+            ProfileEvent::EntryDraining { queued_bytes, .. } => renderer.draining(queued_bytes),
             ProfileEvent::EntryFinished { .. } => {}
         }
     }

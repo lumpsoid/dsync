@@ -973,12 +973,19 @@ pub struct RunView {
 /// `Finished` and `Stopped` end the session; the rest wait on a resume.
 #[derive(Serialize, SignalPiece)]
 pub enum RunPhaseView {
-    Connecting,
+    /// `draining_bytes`: the dialled device's last session is finishing
+    /// its writes, this much still to land, and the dial waits on it. 0
+    /// is not done: its last landings may still be being written.
+    Connecting {
+        draining_bytes: Option<u64>,
+    },
     /// A peer:// link dropped and is being re-dialled: the attempt just
-    /// made, and the backoff before the next dial.
+    /// made, and the backoff before the next dial; `draining_bytes` as in
+    /// `Connecting`.
     Reconnecting {
         attempt: u32,
         next_in_ms: u64,
+        draining_bytes: Option<u64>,
     },
     /// Scanning and reconciling; a dry run stays here until its summary.
     Scanning,

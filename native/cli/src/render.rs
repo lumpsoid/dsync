@@ -221,6 +221,15 @@ impl<O: Write, E: Write> Renderer<O, E> {
         }
     }
 
+    /// A far side's last session is finishing its writes before this
+    /// entry's dial is answered: `queued_bytes` are still to land.
+    pub fn draining(&mut self, queued_bytes: u64) {
+        match self {
+            Renderer::Human(human) => human.draining(queued_bytes),
+            Renderer::Json(json) => json.draining(queued_bytes),
+        }
+    }
+
     /// Human mode's closing list, one line per entry, when a profile ran
     /// more than one.
     pub fn entry_outcomes(&mut self, views: &[RunView], entries: &[EntryReport]) {

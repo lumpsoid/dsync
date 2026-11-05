@@ -106,6 +106,22 @@ impl<O: Write, E: Write> HumanRenderer<O, E> {
         );
     }
 
+    /// The dialled device's last session is finishing its writes: one
+    /// line on stderr per figure it sends. Rounded up, so a figure short
+    /// of a MiB is not "0 MiB"; at 0 its last landings may still be on
+    /// its writers, so no figure is given.
+    pub fn draining(&mut self, queued_bytes: u64) {
+        let device = Side::BOTH
+            .into_iter()
+            .find_map(|side| self.view.replica(side).device())
+            .unwrap_or_else(|| "the far side".to_owned());
+        let left = match queued_bytes.div_ceil(1 << 20) {
+            0 => String::new(),
+            mib => format!(" ({mib} MiB left)"),
+        };
+        let _ = writeln!(self.err, "{device} is finishing its writes{left}");
+    }
+
     /// One line per entry, after every entry has run: only for a profile
     /// of more than one, so a one-entry run's output gains nothing here.
     pub fn entry_outcomes(&mut self, views: &[RunView], entries: &[EntryReport]) {

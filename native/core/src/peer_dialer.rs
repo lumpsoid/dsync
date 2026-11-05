@@ -188,6 +188,8 @@ impl PeerDialer {
     /// and side was issued, so the far side ends it if it is still live
     /// there - a dropped link's - before this one meets its lock; the
     /// token this dial is issued replaces it once the dial succeeds.
+    /// While that session finishes its writes, `on_draining` sees each
+    /// figure of what it has left to land.
     ///
     /// Looked up by id, never by name: a `peer://` location's name is
     /// cosmetic and may have been renamed, or reused by another device,
@@ -199,6 +201,7 @@ impl PeerDialer {
         device: &DeviceId,
         address: Option<PeerAddress>,
         spec: ReplicaSpec,
+        on_draining: impl FnMut(u64),
     ) -> Result<DialedPeer, PeerDialError> {
         let paired = self.paired.load()?;
         let pinned = paired
@@ -223,7 +226,7 @@ impl PeerDialer {
                 .await
                 .map_err(|_| late())??;
         let token = self
-            .claim(&mut tls, reclaim, &mut deadline, &failed)
+            .claim(&mut tls, reclaim, &mut deadline, &failed, on_draining)
             .await?;
         let transport = Transport::split(tls).with_liveness(Liveness::of(&self.tuning));
         let replica = tokio::time::timeout_at(
@@ -287,7 +290,8 @@ impl PeerDialer {
         let mut deadline = Instant::now() + self.tuning.handshake;
         let probing = async {
             let Authenticated { mut tls, .. } = self.authenticate(&failed).await?;
-            self.claim(&mut tls, None, &mut deadline, &failed).await?;
+            self.claim(&mut tls, None, &mut deadline, &failed, |_| {})
+                .await?;
             let (reader, mut writer) = tokio::io::split(tls);
             let mut reader = BufReader::new(reader);
             handshake(&mut reader, &mut writer)
@@ -305,15 +309,17 @@ impl PeerDialer {
     /// The dialer's half of the preamble: presents `reclaim`, answers the
     /// token issued, within `deadline` (which a draining listener moves,
     /// for as long as its queued bytes keep falling inside
-    /// `peer_preamble::DRAINING_LIMIT`).
+    /// `peer_preamble::DRAINING_LIMIT`), each of its figures to
+    /// `on_draining`.
     async fn claim(
         &self,
         tls: &mut TlsStream<TcpStream>,
         reclaim: Option<SessionToken>,
         deadline: &mut Instant,
         failed: &Failed<'_>,
+        on_draining: impl FnMut(u64),
     ) -> Result<SessionToken, PeerDialError> {
-        claim(tls, reclaim, deadline, self.tuning.handshake)
+        claim(tls, reclaim, deadline, self.tuning.handshake, on_draining)
             .await
             .map_err(|failure| match failure {
                 ClaimFailure::Late => failed.unreachable(io::ErrorKind::TimedOut.into()),

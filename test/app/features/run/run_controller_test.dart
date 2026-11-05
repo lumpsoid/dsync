@@ -5,6 +5,7 @@ import 'package:dsync/app/core_link/models/action_choice.dart';
 import 'package:dsync/app/core_link/models/conflict_choice.dart';
 import 'package:dsync/app/core_link/models/run_target.dart';
 import 'package:dsync/app/features/run/run_controller.dart';
+import 'package:dsync/app/features/run/run_view_state.dart';
 import 'package:dsync/app/mass_delete_guard.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
@@ -308,6 +309,28 @@ void main() {
         expect(harness.screenWake.held, isFalse);
       },
     );
+
+    test('a dial waiting on the remote carries what it has left', () async {
+      await harness.show(runView(phase: connectingDraining(7)));
+      expect(
+        harness.state.phase,
+        isA<SyncRunConnecting>().having((c) => c.drainingBytes, 'left', 7),
+      );
+
+      await harness.show(runView(phase: reconnecting(3, drainingBytes: 0)));
+      expect(
+        harness.state.phase,
+        isA<SyncRunReconnecting>()
+            .having((r) => r.attempt, 'attempt', 3)
+            .having((r) => r.drainingBytes, 'left', 0),
+      );
+
+      await harness.show(runView(phase: connecting));
+      expect(
+        harness.state.phase,
+        isA<SyncRunConnecting>().having((c) => c.drainingBytes, 'left', isNull),
+      );
+    });
 
     test('a paused run lets the screen go, and a resumed one holds it '
         'again', () async {

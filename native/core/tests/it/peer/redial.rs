@@ -239,11 +239,11 @@ impl Scene {
             events
         });
         let run = ProfileRun::new(sender, self.phone.state(), tuning, None, stop);
-        let connect = |options| {
+        let connect = |options, draining| {
             connects.fetch_add(1, Ordering::SeqCst);
             let (connector, hook) = (&connector, hook.clone());
             async move {
-                let connected = connector.connect(options).await?;
+                let connected = connector.connect(options, &draining).await?;
                 let (b, _) = Probe::with_hook(connected.b, hook);
                 Ok((connected.a, b, connected.peers))
             }

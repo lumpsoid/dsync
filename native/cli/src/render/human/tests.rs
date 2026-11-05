@@ -779,6 +779,30 @@ fn a_redial_is_one_stderr_line_naming_the_device_and_the_attempt() {
     );
 }
 
+/// A figure short of a MiB rounds up, never to "0 MiB"; at 0 the far
+/// side may still be writing, so the line gives no figure.
+#[test]
+fn a_drain_names_the_device_and_what_it_has_left_in_mib() {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut renderer = HumanRenderer::new(
+        &mut out,
+        &mut err,
+        Verbosity::Normal,
+        fixtures::view(),
+        clock(),
+    );
+    renderer.draining(3 << 20);
+    renderer.draining(300);
+    renderer.draining(0);
+    assert_eq!(String::from_utf8(out).unwrap(), "");
+    assert_eq!(
+        String::from_utf8(err).unwrap(),
+        "box is finishing its writes (3 MiB left)\n\
+         box is finishing its writes (1 MiB left)\n\
+         box is finishing its writes\n"
+    );
+}
+
 #[test]
 fn the_closing_list_is_silent_for_one_entry_and_names_each_outcome_for_several() {
     use dsync_core::{EntryFailure, EntryOutcome, EntryReport, SkipReason};

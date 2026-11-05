@@ -49,9 +49,12 @@ async fn remote(
         jobs: Jobs::DEFAULT,
     };
     let id = host.paired(label).device_id();
-    let dialed = with_deadline("dial", host.dialer().dial(&id, Some(address_of(at)), spec))
-        .await
-        .unwrap();
+    let dialed = with_deadline(
+        "dial",
+        host.dialer().dial(&id, Some(address_of(at)), spec, |_| {}),
+    )
+    .await
+    .unwrap();
     with_deadline("hello", dialed.replica.hello())
         .await
         .unwrap();

@@ -297,6 +297,49 @@ void main() {
     expect(find.byKey(const Key('run-done')), findsNothing);
   });
 
+  group('a dial waiting on the remote to finish its writes', () {
+    testWidgets('re-dialling: what it has left, in MiB, under the attempt', (
+      tester,
+    ) async {
+      await open(
+        tester,
+        runView(phase: reconnecting(2, drainingBytes: 3 << 20)),
+      );
+
+      expect(find.text('Connection lost — reconnecting (2)'), findsOneWidget);
+      expect(
+        find.text('The remote is finishing its writes (3 MiB left)'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('connecting: a figure short of a MiB is rounded up', (
+      tester,
+    ) async {
+      await open(tester, runView(phase: connectingDraining(300)));
+
+      expect(find.text('Connecting…'), findsOneWidget);
+      expect(
+        find.text('The remote is finishing its writes (1 MiB left)'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('nothing queued: the line, with no "0 MiB"', (tester) async {
+      await open(tester, runView(phase: connectingDraining(0)));
+
+      expect(find.text('The remote is finishing its writes'), findsOneWidget);
+      expect(find.textContaining('MiB'), findsNothing);
+    });
+
+    testWidgets('no drain: no line', (tester) async {
+      await open(tester, runView(phase: reconnecting(1)));
+
+      expect(find.text('Connection lost — reconnecting (1)'), findsOneWidget);
+      expect(find.byKey(const Key('run-draining')), findsNothing);
+    });
+  });
+
   testWidgets('reconnecting: the attempt in its line and Stop, no Done', (
     tester,
   ) async {

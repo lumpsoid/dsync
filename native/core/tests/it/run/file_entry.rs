@@ -488,11 +488,11 @@ async fn profile_sync(state: StateDir, entries: &[EffectiveOptions]) -> Vec<Entr
     let report = with_deadline(
         "the profile run",
         run.execute(
-            |options| {
+            |options, draining| {
                 let connector = &connector;
                 async move {
                     connector
-                        .connect(options)
+                        .connect(options, &draining)
                         .await
                         .map(|connected| (connected.a, connected.b, connected.peers))
                 }

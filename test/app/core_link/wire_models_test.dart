@@ -156,6 +156,22 @@ void main() {
         decode(runView(phase: phase)).phase;
 
     expect(
+      phase(connecting),
+      isA<RunConnecting>().having((c) => c.drainingBytes, 'draining', isNull),
+    );
+    expect(
+      phase(connectingDraining(5 << 20)),
+      isA<RunConnecting>().having((c) => c.drainingBytes, 'draining', 5 << 20),
+    );
+    expect(
+      phase(reconnecting(2, nextInMs: 400, drainingBytes: 0)),
+      isA<RunReconnecting>()
+          .having((r) => r.attempt, 'attempt', 2)
+          .having((r) => r.nextInMs, 'next in', 400)
+          .having((r) => r.drainingBytes, 'draining', 0),
+    );
+
+    expect(
       phase(reviewing(planId: 7, apply: 3, reversed: 1, leftOpen: 2)),
       isA<RunReviewing>()
           .having((r) => r.planId, 'plan', 7)

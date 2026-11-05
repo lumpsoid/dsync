@@ -15,7 +15,9 @@ use dsync_core::{
     bind_peer, interface_addresses,
 };
 use dsync_domain::host_port::{format_host_port, parse_bind_address};
-use dsync_domain::{ReplicaSpec, Tuning, advertised_host, preferred_advertisable_address};
+use dsync_domain::{
+    ReplicaSpec, SpoolSetting, Tuning, advertised_host, preferred_advertisable_address,
+};
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
@@ -62,6 +64,7 @@ impl Hub {
             state: self.state.clone(),
             home: self.facts.home().map(str::to_owned),
             tuning: self.tuning,
+            spool: self.spool,
             control: control.clone(),
         };
         let peers = Arc::new(PeerListener::new(
@@ -251,6 +254,8 @@ struct Opener {
     state: StateDir,
     home: Option<String>,
     tuning: Tuning,
+    /// Whether a served root spools what the device's run downloads.
+    spool: SpoolSetting,
     control: Arc<ServeControl>,
 }
 
@@ -266,6 +271,7 @@ impl Opener {
             state,
             home,
             tuning,
+            spool,
             control,
         } = self.clone();
         async move {
@@ -284,10 +290,7 @@ impl Opener {
                 spec.side,
                 spec.jobs,
                 tuning,
-                dsync_core::LocalRules {
-                    symlinks,
-                    spool: dsync_domain::SpoolSetting::Off,
-                },
+                dsync_core::LocalRules { symlinks, spool },
             ))
         }
     }

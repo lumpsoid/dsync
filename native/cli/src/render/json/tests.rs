@@ -443,7 +443,7 @@ fn entries_are_listed_by_index_kind_and_typed_sides() {
         line,
         json!({
             "type": "entries",
-            "version": "1.1",
+            "version": "1.2",
             "entries": [
                 {"index": 0, "entryId": PROFILE_ID, "kind": "folder", "a": "~/notes", "b": "peer://phone/notes"},
                 {"index": 1, "entryId": "fedcba9876543210fedcba9876543210", "kind": "file", "a": "~/notes.md", "b": "peer://phone/notes.md"},
@@ -510,5 +510,26 @@ fn a_redial_is_a_reconnecting_line_with_its_attempt_wait_and_cause() {
             "afterMs": 4000,
             "message": "replica b: scan failed: the connection to the replica closed",
         })
+    );
+}
+
+#[test]
+fn a_drain_is_a_draining_line_with_its_queued_bytes() {
+    let mut out = Vec::new();
+    let mut renderer = JsonRenderer::new(&mut out, fixtures::view());
+    renderer.enter_entry(1, fixtures::view());
+    renderer.draining(3 << 20);
+    renderer.draining(0);
+    let lines: Vec<Value> = std::str::from_utf8(&out)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            json!({ "type": "draining", "entry": 1, "queuedBytes": 3 << 20 }),
+            json!({ "type": "draining", "entry": 1, "queuedBytes": 0 }),
+        ]
     );
 }

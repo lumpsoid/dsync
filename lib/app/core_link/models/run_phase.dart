@@ -18,17 +18,28 @@ sealed class RunPhase {
   };
 }
 
+/// Connecting both sides. [drainingBytes]: the dialled device's last
+/// session is finishing its writes, this much still to land, and the dial
+/// waits on it; 0 is not done, as its last landings may still be written.
 final class RunConnecting extends RunPhase {
-  const RunConnecting();
+  const RunConnecting({this.drainingBytes});
+
+  final int? drainingBytes;
 }
 
 /// A peer:// link dropped and is being re-dialled: the [attempt] just made
-/// (from 1), and the backoff in milliseconds before the next dial.
+/// (from 1), and the backoff in milliseconds before the next dial;
+/// [drainingBytes] as in [RunConnecting].
 final class RunReconnecting extends RunPhase {
-  const RunReconnecting({required this.attempt, required this.nextInMs});
+  const RunReconnecting({
+    required this.attempt,
+    required this.nextInMs,
+    this.drainingBytes,
+  });
 
   final int attempt;
   final int nextInMs;
+  final int? drainingBytes;
 }
 
 /// Scanning and reconciling; a dry run stays here until it ends.

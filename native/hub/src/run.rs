@@ -19,14 +19,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use dsync_core::{
-    BatchDecider, Compared, Connector, Decider, DryRunDecider, Peek, PeerDialer, PeerSessions,
-    ProfileEvent, ProfileReport, ProfileRun, ProfileStop, Recall, Replica, interface_addresses,
+    AnyReplica, BatchDecider, Compared, ConnectError, Connector, Decider, DryRunDecider, Peek,
+    PeerContact, PeerDialer, PeerSessions, ProfileEvent, ProfileReport, ProfileRun, ProfileStop,
+    Recall, Replica, interface_addresses,
 };
 use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     Action, Command, Comparison, EffectiveOptions, Flags, MassDelete, MassOverwrite, Mode, Plan,
     ProfileName, RunFlags, Side, TextDiff,
 };
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
@@ -199,7 +201,7 @@ impl Launch {
             hub.state.clone(),
             facts.home().map(str::to_owned),
             hub.tuning,
-            dsync_domain::SpoolSetting::Off,
+            hub.spool,
         )
         .with_local_addresses(addresses);
         if let Some(identity) = hub.identities().load().map_err(text)? {
@@ -640,6 +642,17 @@ async fn run_session(
     }
 }
 
+/// Both sides of `options` as the profile run takes them, what a draining
+/// far side has left to land sent to `draining`.
+async fn connect(
+    connector: &Connector,
+    options: &EffectiveOptions,
+    draining: UnboundedSender<u64>,
+) -> Result<(AnyReplica, AnyReplica, Vec<PeerContact>), ConnectError> {
+    let connected = connector.connect(options, &draining).await?;
+    Ok((connected.a, connected.b, connected.peers))
+}
+
 async fn attempt(
     control: &Arc<RunControl>,
     hub: &Hub,
@@ -680,7 +693,7 @@ async fn attempt(
         match mode {
             Mode::DryRun => {
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut DryRunDecider,
                 )
@@ -688,7 +701,7 @@ async fn attempt(
             }
             Mode::Batch => {
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut BatchDecider,
                 )
@@ -696,7 +709,7 @@ async fn attempt(
             }
             Mode::Interactive => {
                 run.execute(
-                    |o| async { connector.connect(o).await.map(|c| (c.a, c.b, c.peers)) },
+                    |o, draining| connect(&connector, o, draining),
                     &entries,
                     &mut head,
                 )
@@ -1139,11 +1152,15 @@ mod tests {
         let second = entries[1].entry_id.clone();
         let mut decider = BatchDecider;
         let executing = run.execute(
-            |o| async {
-                if o.entry_id == second {
-                    std::future::pending::<()>().await;
+            |o, draining| {
+                let (connector, second) = (&connector, &second);
+                async move {
+                    if o.entry_id == *second {
+                        std::future::pending::<()>().await;
+                    }
+                    let connected = connector.connect(o, &draining).await?;
+                    Ok((connected.a, connected.b, connected.peers))
                 }
-                connector.connect(o).await.map(|c| (c.a, c.b, c.peers))
             },
             &entries,
             &mut decider,

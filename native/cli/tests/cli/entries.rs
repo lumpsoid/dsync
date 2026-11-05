@@ -66,7 +66,7 @@ fn json_output_for_a_two_entry_profile_lists_entries_and_tags_every_line() {
         .find(|line| line["type"] == "entries")
         .expect("an entries line");
     assert_eq!(lines[0], *entries_line, "the entries line leads");
-    assert_eq!(entries_line["version"], "1.1");
+    assert_eq!(entries_line["version"], "1.2");
     let listed = entries_line["entries"].as_array().unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0]["index"], 0);

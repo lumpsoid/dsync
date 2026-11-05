@@ -236,7 +236,7 @@ impl ProfileRun {
         decider: &mut impl Decider,
     ) -> Result<ProfileReport, ResolvedOverlap>
     where
-        C: FnMut(&'o EffectiveOptions) -> F,
+        C: FnMut(&'o EffectiveOptions, mpsc::UnboundedSender<u64>) -> F,
         F: Future<Output = Result<(A, B, Vec<PeerContact>), ConnectError>>,
         A: Replica,
         B: Replica,
@@ -321,14 +321,14 @@ impl ProfileRun {
         recorder: &mut EntryRecorder,
     ) -> EntryReport
     where
-        C: FnMut(&'o EffectiveOptions) -> F,
+        C: FnMut(&'o EffectiveOptions, mpsc::UnboundedSender<u64>) -> F,
         F: Future<Output = Result<(A, B, Vec<PeerContact>), ConnectError>>,
         A: Replica,
         B: Replica,
     {
         self.emit(ProfileEvent::EntryConnecting { entry: index })
             .await;
-        let (a, b, peers) = match self.connect(options, connect).await {
+        let (a, b, peers) = match self.connect(index, options, connect).await {
             None => return EntryReport::unrun(EntryOutcome::NotRun),
             Some(Err(error)) => {
                 let failure = self.not_connected(index, error).await;
@@ -390,7 +390,7 @@ impl ProfileRun {
                     }
                     () = tokio::time::sleep(after) => {}
                 }
-                match self.connect(options, connect).await {
+                match self.connect(index, options, connect).await {
                     None => return attempts.ended(ran, Some(EntryOutcome::NotRun)),
                     Some(Ok((a, b, peers))) => {
                         self.emit(ProfileEvent::EntryConnected {
@@ -421,20 +421,36 @@ impl ProfileRun {
         }
     }
 
-    /// `connect(options)`, abandoned (`None`) at a stop.
+    /// `connect(options)`, abandoned (`None`) at a stop. Each figure the
+    /// connect sends of what a far side's last session has left to land
+    /// goes out as [`ProfileEvent::EntryDraining`] for entry `index`.
     async fn connect<'o, C, F, A, B>(
         &self,
+        index: usize,
         options: &'o EffectiveOptions,
         connect: &mut C,
     ) -> Option<Result<(A, B, Vec<PeerContact>), ConnectError>>
     where
-        C: FnMut(&'o EffectiveOptions) -> F,
+        C: FnMut(&'o EffectiveOptions, mpsc::UnboundedSender<u64>) -> F,
         F: Future<Output = Result<(A, B, Vec<PeerContact>), ConnectError>>,
     {
+        let (draining, mut drains) = mpsc::unbounded_channel();
+        // The connect's future holds the only sender: the forwarding ends
+        // when the connect does.
+        let connecting = connect(options, draining);
+        let forwarding = async {
+            while let Some(queued_bytes) = drains.recv().await {
+                self.emit(ProfileEvent::EntryDraining {
+                    entry: index,
+                    queued_bytes,
+                })
+                .await;
+            }
+        };
         tokio::select! {
             biased;
             () = self.stop.0.until_requested() => None,
-            connected = connect(options) => Some(connected),
+            (connected, ()) = async { tokio::join!(connecting, forwarding) } => Some(connected),
         }
     }
 

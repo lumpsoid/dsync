@@ -60,7 +60,7 @@ pub(crate) fn steer(session: u64, intent: RunIntent) -> CoreCommand {
 /// The phase's name, for asserting the order phases came in.
 fn stage(view: &FoldedRunView) -> &'static str {
     match view.phase {
-        RunPhaseView::Connecting => "connecting",
+        RunPhaseView::Connecting { .. } => "connecting",
         RunPhaseView::Reconnecting { .. } => "reconnecting",
         RunPhaseView::Scanning => "scanning",
         RunPhaseView::Reviewing { .. } => "reviewing",

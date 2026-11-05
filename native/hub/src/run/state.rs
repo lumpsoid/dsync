@@ -63,12 +63,18 @@ enum Suspend {
 }
 
 enum Phase {
-    Connecting,
+    /// `draining`: what the dialled device's last session still has to
+    /// land, while the dial waits on it.
+    Connecting {
+        draining: Option<u64>,
+    },
     /// A dropped peer:// link is being re-dialled: the attempt just made,
-    /// and the backoff before the next dial.
+    /// and the backoff before the next dial; `draining` as in
+    /// `Connecting`.
     Reconnecting {
         attempt: u32,
         next_in_ms: u64,
+        draining: Option<u64>,
     },
     Scanning,
     /// The head reviews this plan, the decider waiting.
@@ -93,10 +99,23 @@ enum Phase {
 }
 
 impl Phase {
+    /// The dial this phase waits on: the dialled device's last session
+    /// still has `queued_bytes` to land. Only a connect waits on one;
+    /// whether this phase is one.
+    fn draining(&mut self, queued_bytes: u64) -> bool {
+        match self {
+            Phase::Connecting { draining } | Phase::Reconnecting { draining, .. } => {
+                *draining = Some(queued_bytes);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Live, waiting on a resume, or over for good.
     fn standing(&self) -> RunStandingView {
         match self {
-            Phase::Connecting
+            Phase::Connecting { .. }
             | Phase::Reconnecting { .. }
             | Phase::Scanning
             | Phase::Reviewing(_)
@@ -570,7 +589,7 @@ impl RunState {
         RunState {
             dry_run,
             peek,
-            phase: Phase::Connecting,
+            phase: Phase::Connecting { draining: None },
             suspend: None,
             closing: false,
             entries: Vec::new(),
@@ -678,7 +697,7 @@ impl RunState {
             // the dropped attempt's failure, rows and progress go, and
             // what it completed is kept in `completed_earlier`.
             ProfileEvent::EntryConnecting { entry } => {
-                self.restart_entry(entry, Phase::Connecting);
+                self.restart_entry(entry, Phase::Connecting { draining: None });
                 Urgency::Now
             }
             ProfileEvent::EntryReconnecting {
@@ -693,9 +712,20 @@ impl RunState {
                     Phase::Reconnecting {
                         attempt,
                         next_in_ms,
+                        draining: None,
                     },
                 );
                 Urgency::Now
+            }
+            ProfileEvent::EntryDraining {
+                entry,
+                queued_bytes,
+            } if self.current == Some(entry) => {
+                if self.phase.draining(queued_bytes) {
+                    Urgency::Routine
+                } else {
+                    Urgency::Unseen
+                }
             }
             ProfileEvent::EntryConnected { entry, .. } if self.current == Some(entry) => {
                 self.connected(at_ms)
@@ -721,6 +751,7 @@ impl RunState {
             // Its `EntryFinished` says it.
             ProfileEvent::EntryNotConnected { .. }
             | ProfileEvent::EntryConnected { .. }
+            | ProfileEvent::EntryDraining { .. }
             | ProfileEvent::Entry { .. } => Urgency::Unseen,
         }
     }
@@ -1043,13 +1074,17 @@ impl RunState {
 
     fn phase_view(&self) -> RunPhaseView {
         match &self.phase {
-            Phase::Connecting => RunPhaseView::Connecting,
+            Phase::Connecting { draining } => RunPhaseView::Connecting {
+                draining_bytes: *draining,
+            },
             Phase::Reconnecting {
                 attempt,
                 next_in_ms,
+                draining,
             } => RunPhaseView::Reconnecting {
                 attempt: *attempt,
                 next_in_ms: *next_in_ms,
+                draining_bytes: *draining,
             },
             Phase::Scanning => RunPhaseView::Scanning,
             Phase::Reviewing(plan) => RunPhaseView::Reviewing {
@@ -1473,7 +1508,7 @@ mod tests {
         let mut state = RunState::new(true, Tuning::DEFAULT.peek);
         let view = state.view();
         assert!(view.dry_run);
-        assert!(matches!(view.phase, RunPhaseView::Connecting));
+        assert!(matches!(view.phase, RunPhaseView::Connecting { .. }));
         assert_eq!(view.connected_at_ms, None);
         assert_eq!(state.connected(42), Urgency::Now);
         let view = state.view();
@@ -2034,7 +2069,7 @@ mod tests {
         assert!(
             matches!(
                 phase(&state),
-                RunPhaseView::Connecting | RunPhaseView::Scanning
+                RunPhaseView::Connecting { .. } | RunPhaseView::Scanning
             ),
             "decided when the attempt ends"
         );
@@ -2087,7 +2122,7 @@ mod tests {
         assert!(!state.is_over());
         assert_eq!(state.steer(RunIntent::Foreground), Steer::Restart);
         let view = state.view();
-        assert!(matches!(view.phase, RunPhaseView::Connecting));
+        assert!(matches!(view.phase, RunPhaseView::Connecting { .. }));
         assert!(matches!(view.plan, PlanUpdateView::Absent) && view.connected_at_ms.is_none());
         assert_eq!(
             state.steer(RunIntent::Resume),
@@ -2190,6 +2225,77 @@ mod tests {
         );
     }
 
+    fn draining(state: &mut RunState, entry: usize, queued_bytes: u64) -> Urgency {
+        state.profile_event(
+            ProfileEvent::EntryDraining {
+                entry,
+                queued_bytes,
+            },
+            4,
+        )
+    }
+
+    /// A re-dial's drain shows on its phase, its latest figure, until the
+    /// dial connects.
+    #[test]
+    fn a_redials_drain_shows_its_latest_figure_until_it_connects() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(1));
+        dropped_attempt(&mut state, 0);
+        reconnecting(&mut state, 0);
+        assert_eq!(draining(&mut state, 0, 3 << 20), Urgency::Routine);
+        assert_eq!(draining(&mut state, 0, 0), Urgency::Routine);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Reconnecting {
+                attempt: 1,
+                draining_bytes: Some(0),
+                ..
+            }
+        ));
+        state.profile_event(
+            ProfileEvent::EntryConnected {
+                entry: 0,
+                peers: Vec::new(),
+            },
+            5,
+        );
+        assert!(matches!(phase(&state), RunPhaseView::Scanning));
+        // Past the connect, a figure has no dial to show on.
+        assert_eq!(draining(&mut state, 0, 7), Urgency::Unseen);
+        assert!(matches!(phase(&state), RunPhaseView::Scanning));
+    }
+
+    /// A first dial that carries a claim meets a drain too: the app back
+    /// from the background dials with its token.
+    #[test]
+    fn a_first_dials_drain_shows_on_connecting() {
+        let mut state = RunState::new(false, Tuning::DEFAULT.peek);
+        state.listed(roots(2));
+        state.profile_event(ProfileEvent::EntryConnecting { entry: 0 }, 1);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Connecting {
+                draining_bytes: None
+            }
+        ));
+        draining(&mut state, 0, 5 << 20);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Connecting {
+                draining_bytes: Some(n)
+            } if n == 5 << 20
+        ));
+        // Another entry's figure is not this one's.
+        assert_eq!(draining(&mut state, 1, 1), Urgency::Unseen);
+        assert!(matches!(
+            phase(&state),
+            RunPhaseView::Connecting {
+                draining_bytes: Some(n)
+            } if n == 5 << 20
+        ));
+    }
+
     #[test]
     fn a_redial_clears_the_dropped_attempts_failure_and_connects_again() {
         let mut state = RunState::new(false, Tuning::DEFAULT.peek);
@@ -2200,7 +2306,8 @@ mod tests {
             phase(&state),
             RunPhaseView::Reconnecting {
                 attempt: 1,
-                next_in_ms: 1000
+                next_in_ms: 1000,
+                draining_bytes: None,
             }
         ));
         assert_eq!(standing(&state), RunStandingView::Live);
@@ -2926,7 +3033,7 @@ mod tests {
 
         assert_eq!(state.steer(RunIntent::Foreground), Steer::Restart);
         let view = state.view();
-        assert!(matches!(view.phase, RunPhaseView::Connecting));
+        assert!(matches!(view.phase, RunPhaseView::Connecting { .. }));
         assert_eq!(view.current, None);
         assert!(matches!(view.plan, PlanUpdateView::Absent) && view.timings.is_none());
         assert_eq!(view.entries[1].local_root, "/e1/a", "the roots stay listed");

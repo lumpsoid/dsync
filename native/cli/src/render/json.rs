@@ -2,8 +2,8 @@
 //! `type`: `replicas`, `scanTally`, `symlink` / `unreadable` /
 //! `caseFoldCollision` / `unrepresentableName`, `conflict`, `plan`,
 //! `massDelete`, `action`, `result`, `progress`, `summary`, `error`; and
-//! around them `entries` and `reconnecting`. Facts only; the human warnings
-//! are renderings of them.
+//! around them `entries`, `reconnecting` and `draining`. Facts only; the
+//! human warnings are renderings of them.
 
 use std::io::Write;
 use std::time::Duration;
@@ -23,7 +23,7 @@ use super::{RunView, words};
 /// major moves when a consumer would otherwise read a line wrong - a field
 /// or `type` renamed, removed or given another meaning; the minor when a
 /// field or `type` is added, which a consumer ignores.
-const JSON_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 1);
+const JSON_FORMAT_VERSION: FormatVersion = FormatVersion::new(1, 2);
 
 pub struct JsonRenderer<O: Write> {
     out: O,
@@ -90,6 +90,18 @@ impl<O: Write> JsonRenderer<O> {
             "attempt": attempt,
             "afterMs": u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
             "message": cause.to_string(),
+        });
+        let _ = writeln!(self.out, "{line}");
+    }
+
+    /// The dial waits while the far side's last session finishes its
+    /// writes: `queuedBytes` still to land, 0 while its last landings are
+    /// still being written.
+    pub fn draining(&mut self, queued_bytes: u64) {
+        let line = json!({
+            "type": "draining",
+            "entry": self.entry,
+            "queuedBytes": queued_bytes,
         });
         let _ = writeln!(self.out, "{line}");
     }

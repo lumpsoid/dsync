@@ -10,6 +10,7 @@ use dsync_domain::{
     Command, DeviceId, EffectiveOptions, Flags, HostFacts, Location, Platform, ReplicaLocation,
     RunFlags, Tuning,
 };
+use tokio::sync::mpsc::unbounded_channel;
 
 use crate::peer::support::{Host, address_of, identity, name, serve, somewhere, with_deadline};
 
@@ -77,9 +78,12 @@ async fn a_device_renamed_after_pinning_still_connects_with_unchanged_options() 
         .update(|devices| devices.rename(&pinned, name("desktop-renamed")))
         .unwrap();
 
-    let connected = with_deadline("connect", connector(&client).connect(&options))
-        .await
-        .unwrap_or_else(|error| panic!("the rename broke the dial: {error}"));
+    let connected = with_deadline(
+        "connect",
+        connector(&client).connect(&options, &unbounded_channel().0),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the rename broke the dial: {error}"));
     assert_eq!(connected.peers[0].device, pinned);
     with_deadline("close", connected.b.close()).await.unwrap();
 }
@@ -117,9 +121,12 @@ async fn a_different_device_that_takes_the_old_name_is_never_dialled_in_its_plac
         &[],
     );
 
-    let connected = with_deadline("connect", connector(&client).connect(&options))
-        .await
-        .unwrap_or_else(|error| panic!("{error}"));
+    let connected = with_deadline(
+        "connect",
+        connector(&client).connect(&options, &unbounded_channel().0),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
 
     assert_eq!(connected.peers[0].device, pinned, "dialled the pinned id");
     assert_eq!(

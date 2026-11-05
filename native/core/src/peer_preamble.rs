@@ -189,11 +189,13 @@ struct Progress {
 /// `queued_bytes`: past that the claim fails as
 /// [`LinkError::StillDraining`]. `deadline` itself is left uncapped, so
 /// what follows the preamble still has its window after an honest drain.
+/// `on_draining` sees each frame's `queued_bytes` as it arrives.
 pub(crate) async fn claim<S>(
     stream: &mut S,
     reclaim: Option<SessionToken>,
     deadline: &mut Instant,
     window: Duration,
+    mut on_draining: impl FnMut(u64),
 ) -> Result<SessionToken, ClaimFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -224,6 +226,7 @@ where
                 return Ok(token);
             }
             Preamble::Draining { queued_bytes } => {
+                on_draining(queued_bytes);
                 let now = Instant::now();
                 if draining.is_none_or(|progress| queued_bytes < progress.lowest) {
                     draining = Some(Progress {
@@ -392,9 +395,15 @@ mod tests {
             tokio::join!(
                 async {
                     let mut deadline = Instant::now() + DEADLINE;
-                    let token = claim(&mut dialer, Some(held.clone()), &mut deadline, DEADLINE)
-                        .await
-                        .unwrap();
+                    let token = claim(
+                        &mut dialer,
+                        Some(held.clone()),
+                        &mut deadline,
+                        DEADLINE,
+                        |_| {},
+                    )
+                    .await
+                    .unwrap();
                     version_frame(PROTOCOL_VERSION)
                         .write_to(&mut dialer)
                         .await
@@ -451,7 +460,7 @@ mod tests {
         });
         let started = Instant::now();
         let mut deadline = started + window;
-        let claimed = claim(&mut dialer, None, &mut deadline, window).await;
+        let claimed = claim(&mut dialer, None, &mut deadline, window, |_| {}).await;
         let took = started.elapsed();
         drop(dialer);
         far.await.unwrap();
@@ -546,6 +555,29 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(took, 2 * heartbeat + DRAINING_LIMIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_draining_frame_is_seen_by_the_dialer_in_order() {
+        let (mut dialer, mut listener) = duplex(1024);
+        let far = tokio::spawn(async move {
+            Preamble::read_from(&mut listener).await.unwrap();
+            for queued_bytes in [300, 200, 0] {
+                write_draining(&mut listener, queued_bytes).await.unwrap();
+            }
+            write_issued(&mut listener, &SessionToken::generate())
+                .await
+                .unwrap();
+        });
+        let mut seen = Vec::new();
+        let mut deadline = Instant::now() + DEADLINE;
+        let claimed = claim(&mut dialer, None, &mut deadline, DEADLINE, |queued_bytes| {
+            seen.push(queued_bytes);
+        })
+        .await;
+        far.await.unwrap();
+        assert!(claimed.is_ok(), "{claimed:?}");
+        assert_eq!(seen, vec![300, 200, 0]);
     }
 
     #[tokio::test(start_paused = true)]

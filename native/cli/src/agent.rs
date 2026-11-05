@@ -14,7 +14,7 @@ use dsync_core::{
     ReplicaServer, Root, ServedReads, StateDir, Symlinks, bind_peer,
 };
 use dsync_domain::host_port::{format_host_port, is_wildcard_address};
-use dsync_domain::{HostFacts, ReplicaSpec, Tuning};
+use dsync_domain::{HostFacts, ReplicaSpec, SpoolSetting, Tuning};
 
 use crate::args::{AgentArgs, AgentMode};
 use crate::failure::Failure;
@@ -25,15 +25,18 @@ use crate::stop::{STOP_DEADLINE, StopSequence, exit_process, os_signals};
 pub async fn agent(args: AgentArgs, host: &Host) -> Result<u8, Failure> {
     let mode = args.mode()?;
     let state = StateDir::resolve(&args.state.choice()?, &host.facts).map_err(Failure::error)?;
-    let opener = Opener {
+    let opener = |spool| Opener {
         state: state.clone(),
         home: host.facts.home().map(str::to_owned),
         tuning: Tuning::DEFAULT,
+        spool,
     };
     match mode {
-        AgentMode::Stdio => serve_stdio(opener).await,
-        AgentMode::Listen(socket) => listen(&socket, opener).await,
-        AgentMode::Serve { bind, port } => serve(bind, port, &state, &host.facts, opener).await,
+        AgentMode::Stdio => serve_stdio(opener(SpoolSetting::Off)).await,
+        AgentMode::Listen(socket) => listen(&socket, opener(SpoolSetting::Off)).await,
+        AgentMode::Serve { bind, port, spool } => {
+            serve(bind, port, &state, &host.facts, opener(spool)).await
+        }
     }
 }
 
@@ -43,6 +46,8 @@ struct Opener {
     state: StateDir,
     home: Option<String>,
     tuning: Tuning,
+    /// Whether an opened replica spools its downloads.
+    spool: SpoolSetting,
 }
 
 impl Opener {
@@ -56,6 +61,7 @@ impl Opener {
             state,
             home,
             tuning,
+            spool,
         } = self.clone();
         async move {
             let root = spec
@@ -70,10 +76,7 @@ impl Opener {
                 spec.side,
                 spec.jobs,
                 tuning,
-                dsync_core::LocalRules {
-                    symlinks,
-                    spool: dsync_domain::SpoolSetting::Off,
-                },
+                dsync_core::LocalRules { symlinks, spool },
             ))
         }
     }

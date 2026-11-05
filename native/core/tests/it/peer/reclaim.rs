@@ -6,7 +6,7 @@
 //! test re-dials by hand with the same `PeerSessions`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dsync_core::{
@@ -111,18 +111,20 @@ impl Scene {
         sessions: &Arc<PeerSessions>,
         spec: ReplicaSpec,
     ) -> (Result<(), ReplicaError>, RemoteReplica) {
-        let replica = self.connect(client, sessions, spec).await;
+        let replica = self.connect(client, sessions, spec, |_| {}).await;
         let locked = within("lock", replica.lock()).await.map(|_| ());
         (locked, replica)
     }
 
     /// The replica `spec` names, dialled through the relay as `client`
-    /// remembering its sessions in `sessions`, said hello to, not locked.
+    /// remembering its sessions in `sessions`, said hello to, not locked;
+    /// each figure a draining session sends goes to `on_draining`.
     async fn connect(
         &self,
         client: &Host,
         sessions: &Arc<PeerSessions>,
         spec: ReplicaSpec,
+        on_draining: impl FnMut(u64),
     ) -> RemoteReplica {
         let dialer = PeerDialer::new(
             client.identity.clone(),
@@ -136,6 +138,7 @@ impl Scene {
                 &self.server.identity.device_id(),
                 Some(address_of(self.link.at)),
                 spec,
+                on_draining,
             ),
         )
         .await
@@ -395,6 +398,7 @@ async fn a_cut_link_fails_at_once_and_a_refusing_one_is_unreachable() {
             &scene.server.identity.device_id(),
             Some(address_of(scene.link.at)),
             spec(scene.root.to_str().unwrap()),
+            |_| {},
         ),
     )
     .await;
@@ -478,7 +482,12 @@ async fn reclaim_while_landing(take_landed_open: bool) {
     let scene = scene_serving(far, SpoolSetting::On).await;
     let sessions = Arc::new(PeerSessions::new());
     let first = scene
-        .connect(&scene.phone, &sessions, spec(scene.root.to_str().unwrap()))
+        .connect(
+            &scene.phone,
+            &sessions,
+            spec(scene.root.to_str().unwrap()),
+            |_| {},
+        )
         .await;
     let facts = within("lock", first.lock()).await.unwrap();
     assert_eq!(facts.spool_room, room, "the volume is short");
@@ -510,7 +519,13 @@ async fn reclaim_while_landing(take_landed_open: bool) {
 
     // Many heartbeats, and many times `reclaim_wait`.
     let drain = 8 * far.heartbeat;
-    let claiming = scene.connect(&scene.phone, &sessions, spec(scene.root.to_str().unwrap()));
+    let seen = Mutex::new(Vec::new());
+    let claiming = scene.connect(
+        &scene.phone,
+        &sessions,
+        spec(scene.root.to_str().unwrap()),
+        |queued_bytes| seen.lock().unwrap().push(queued_bytes),
+    );
     tokio::pin!(claiming);
     let landing = async {
         tokio::time::sleep(drain).await;
@@ -536,6 +551,13 @@ async fn reclaim_while_landing(take_landed_open: bool) {
         () = landing => {}
     }
     let second = within("the claim", claiming).await;
+    // The claimer saw the drain, its figure only ever falling.
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.first().is_some_and(|&first| first > 0), "{seen:?}");
+    assert!(
+        seen.is_sorted_by(|earlier, later| earlier >= later),
+        "{seen:?}"
+    );
     // Answered once the session had gone: everything it staged landed,
     // its spool empty, before the claimer could lock or scan.
     for (name, content) in files {

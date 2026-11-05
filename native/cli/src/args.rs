@@ -6,7 +6,7 @@ use std::net::IpAddr;
 
 use clap::{Args, Parser, Subcommand};
 use dsync_domain::host_port::parse_bind_address;
-use dsync_domain::{DirPath, DirRule, Flags, StateDirChoice, Tuning};
+use dsync_domain::{DirPath, DirRule, Flags, SpoolSetting, StateDirChoice, Tuning};
 
 use crate::failure::Failure;
 
@@ -226,8 +226,29 @@ pub struct SyncArgs {
     /// Show the plan, apply nothing.
     #[arg(long)]
     pub dry_run: bool,
+    /// Take what this run downloads into a side it opens itself into a
+    /// spool in its state directory, and land it from there (SPEC
+    /// §4.2's stage): for a destination whose writes are slower than the
+    /// link. Off by default.
+    #[arg(long)]
+    pub spool: bool,
     #[command(flatten)]
     pub run: RunArgs,
+}
+
+impl SyncArgs {
+    /// Whether the side this run opens itself spools its downloads.
+    pub fn spool(&self) -> SpoolSetting {
+        spool_setting(self.spool)
+    }
+}
+
+fn spool_setting(on: bool) -> SpoolSetting {
+    if on {
+        SpoolSetting::On
+    } else {
+        SpoolSetting::Off
+    }
 }
 
 /// `status` is `sync --dry-run` under a friendlier name, so it has no
@@ -374,6 +395,12 @@ pub struct AgentArgs {
     /// hostname; if it cannot be bound, this fails rather than falling back.
     #[arg(long, value_name = "ADDRESS")]
     pub bind: Option<String>,
+    /// What a paired device's run downloads into a root --serve opens is
+    /// taken into a spool in this host's state directory and landed from
+    /// there (SPEC §4.2's stage): for a destination whose writes are
+    /// slower than the link. Off by default.
+    #[arg(long)]
+    pub spool: bool,
     #[command(flatten)]
     pub state: StateDirArgs,
 }
@@ -384,7 +411,11 @@ pub struct AgentArgs {
 pub enum AgentMode {
     Stdio,
     Listen(String),
-    Serve { bind: IpAddr, port: u16 },
+    Serve {
+        bind: IpAddr,
+        port: u16,
+        spool: SpoolSetting,
+    },
 }
 
 impl AgentArgs {
@@ -410,6 +441,12 @@ impl AgentArgs {
         if self.port.is_some() && !self.serve {
             return Err(Failure::usage("--port only means something with --serve."));
         }
+        if self.spool && !self.serve {
+            return Err(Failure::usage(
+                "--spool only means something with --serve: it spools what a paired \
+                 device's run downloads into this host.",
+            ));
+        }
         if self.bind.is_some() && !self.serve {
             return Err(Failure::usage(
                 "--bind only means something with --serve: --listen binds a unix socket, \
@@ -434,6 +471,7 @@ impl AgentArgs {
             return Ok(AgentMode::Serve {
                 bind,
                 port: self.port.unwrap_or(Tuning::DEFAULT.peer_port),
+                spool: spool_setting(self.spool),
             });
         }
         Err(Failure::usage(
@@ -590,6 +628,7 @@ mod tests {
     #[test]
     fn port_and_bind_only_mean_something_with_serve() {
         assert!(usage_text(agent(&["--stdio", "--port", "9"]).unwrap_err()).contains("--port"));
+        assert!(usage_text(agent(&["--stdio", "--spool"]).unwrap_err()).contains("--spool"));
         assert!(
             usage_text(agent(&["--listen", "/s", "--bind", "::"]).unwrap_err()).contains("--bind")
         );
@@ -601,14 +640,24 @@ mod tests {
             agent(&["--serve"]).unwrap(),
             AgentMode::Serve {
                 bind: IpAddr::from([0, 0, 0, 0]),
-                port: Tuning::DEFAULT.peer_port
+                port: Tuning::DEFAULT.peer_port,
+                spool: SpoolSetting::Off,
             }
         );
         assert_eq!(
             agent(&["--serve", "--bind", "[::1]", "--port", "0"]).unwrap(),
             AgentMode::Serve {
                 bind: "::1".parse().unwrap(),
-                port: 0
+                port: 0,
+                spool: SpoolSetting::Off,
+            }
+        );
+        assert_eq!(
+            agent(&["--serve", "--spool"]).unwrap(),
+            AgentMode::Serve {
+                bind: IpAddr::from([0, 0, 0, 0]),
+                port: Tuning::DEFAULT.peer_port,
+                spool: SpoolSetting::On,
             }
         );
     }

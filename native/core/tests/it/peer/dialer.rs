@@ -61,7 +61,11 @@ async fn an_id_that_is_not_paired_is_refused_before_any_socket() {
     let client = Host::new(identity("phone"));
     client.pair(&identity("desktop"), "desktop", somewhere(), &[]);
     let laptop = identity("laptop").device_id();
-    let dialed = with_deadline("dial", client.dialer().dial(&laptop, None, spec("/"))).await;
+    let dialed = with_deadline(
+        "dial",
+        client.dialer().dial(&laptop, None, spec("/"), |_| {}),
+    )
+    .await;
     match dialed {
         Err(PeerDialError::NotPaired(id)) => assert_eq!(id, laptop),
         other => panic!("{:?}", other.map(|_| ())),
@@ -112,7 +116,10 @@ async fn a_silent_peer_is_abandoned_at_the_dial_bound_holding_nothing() {
     let desktop = desktop_identity.device_id();
     let started = Instant::now();
     let (dialed, accepted) = with_deadline("dial", async {
-        tokio::join!(dialer.dial(&desktop, None, spec("/")), silent.accept())
+        tokio::join!(
+            dialer.dial(&desktop, None, spec("/"), |_| {}),
+            silent.accept()
+        )
     })
     .await;
     let waited = started.elapsed();
@@ -156,6 +163,7 @@ async fn a_dial_that_finishes_in_time_is_untouched_by_the_bound() {
             &server.identity.device_id(),
             Some(address_of(serving.at)),
             spec("/"),
+            |_| {},
         ),
     )
     .await

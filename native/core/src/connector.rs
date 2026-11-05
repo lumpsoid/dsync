@@ -16,6 +16,7 @@ use dsync_domain::{
     CertificateExpiry, DeviceId, EffectiveOptions, ExpandError, Locality, Location,
     ReplicaLocation, ReplicaSpec, Side, SpoolSetting, Tuning,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::any_replica::AnyReplica;
 use crate::link_error::LinkError;
@@ -173,10 +174,16 @@ impl Connector {
     }
 
     /// Both sides, A first. A side that fails closes the one already
-    /// connected before the failure is returned.
-    pub async fn connect(&self, options: &EffectiveOptions) -> Result<Connected, ConnectError> {
-        let (a, peer_a) = self.side(options, Side::A).await?;
-        match self.side(options, Side::B).await {
+    /// connected before the failure is returned. A `peer://` side whose
+    /// last session is still finishing its writes sends `draining` each
+    /// figure of what it has left to land, while the dial waits on it.
+    pub async fn connect(
+        &self,
+        options: &EffectiveOptions,
+        draining: &UnboundedSender<u64>,
+    ) -> Result<Connected, ConnectError> {
+        let (a, peer_a) = self.side(options, Side::A, draining).await?;
+        match self.side(options, Side::B, draining).await {
             Ok((b, peer_b)) => Ok(Connected {
                 a,
                 b,
@@ -193,6 +200,7 @@ impl Connector {
         &self,
         options: &EffectiveOptions,
         side: Side,
+        draining: &UnboundedSender<u64>,
     ) -> Result<(AnyReplica, Option<PeerContact>), ConnectError> {
         let replica_location = options.replica(side);
         let location = replica_location.to_location();
@@ -229,7 +237,10 @@ impl Connector {
             // dialled in its place.
             (Locality::Remote, ReplicaLocation::Peer(_, device)) => match &self.peers {
                 Some(dialer) => dialer
-                    .dial(device, self.peer_address.clone(), spec)
+                    .dial(device, self.peer_address.clone(), spec, |queued_bytes| {
+                        // Gone only when no one watches the connect.
+                        let _unwatched = draining.send(queued_bytes);
+                    })
                     .await
                     .map(|dialed| {
                         let contact = PeerContact {
