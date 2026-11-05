@@ -18,5 +18,6 @@ mod recent;
 mod soak;
 #[cfg(unix)]
 mod special_files;
+mod spool;
 pub(crate) mod support;
 mod unfinished;

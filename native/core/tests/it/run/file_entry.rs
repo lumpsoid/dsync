@@ -29,15 +29,15 @@ enum Reach {
 
 /// A file entry between `a/notes.md` and `b/other.md` of a [`Site`], or
 /// wherever its fields put the two files.
-struct FileEntry {
-    site: Site,
+pub(crate) struct FileEntry {
+    pub(crate) site: Site,
     a: PathBuf,
     b: PathBuf,
     ignore: &'static str,
 }
 
 impl FileEntry {
-    fn new() -> FileEntry {
+    pub(crate) fn new() -> FileEntry {
         let site = Site::new();
         FileEntry {
             a: site.file(Side::A, "notes.md"),
@@ -47,18 +47,18 @@ impl FileEntry {
         }
     }
 
-    fn file(&self, side: Side) -> &PathBuf {
+    pub(crate) fn file(&self, side: Side) -> &PathBuf {
         match side {
             Side::A => &self.a,
             Side::B => &self.b,
         }
     }
 
-    fn put(&self, side: Side, content: &str) {
+    pub(crate) fn put(&self, side: Side, content: &str) {
         fs::write(self.file(side), content).unwrap();
     }
 
-    fn get(&self, side: Side) -> Option<String> {
+    pub(crate) fn get(&self, side: Side) -> Option<String> {
         fs::read_to_string(self.file(side)).ok()
     }
 
@@ -72,7 +72,7 @@ impl FileEntry {
         Profile::parse(&text, Platform::HOST).unwrap()
     }
 
-    fn options(&self) -> EffectiveOptions {
+    pub(crate) fn options(&self) -> EffectiveOptions {
         let mut options = self
             .profile()
             .options(
@@ -85,7 +85,7 @@ impl FileEntry {
         options.remove(0)
     }
 
-    fn spec(&self, side: Side) -> ReplicaSpec {
+    pub(crate) fn spec(&self, side: Side) -> ReplicaSpec {
         let options = self.options();
         ReplicaSpec {
             root: self.file(side).to_str().unwrap().to_owned(),
@@ -97,7 +97,7 @@ impl FileEntry {
         }
     }
 
-    fn replica(&self, side: Side) -> LocalReplica {
+    pub(crate) fn replica(&self, side: Side) -> LocalReplica {
         let spec = self.spec(side);
         LocalReplica::open(
             dsync_core::Root::new(spec.root, spec.kind, spec.as_path).unwrap(),

@@ -12,7 +12,21 @@
 //!    writer's work: sized to the replica's writers, the slots would leave
 //!    most of those writers idle. A delete or commit-only action takes a
 //!    slot too.
-//! 3. **The commit pipeline** gathers what each finished action owes the
+//!
+//!    A copy onto a side whose spool had room at lock stages instead of
+//!    writing (SPEC §7.2): the worker's slot goes as soon as the
+//!    destination has taken the whole body, so the slots cycle at the
+//!    speed the destination takes bodies in, not the speed it lands
+//!    them. The copy waits in that side's [`Staging`] until it lands.
+//!    A copy aside always writes: few, and one staged then left
+//!    uncommitted by a drop would come back as an unfinished write.
+//! 3. **The landing task**, one per side that stages, asks the side for
+//!    what has landed while a staged copy is waiting, and hands each
+//!    landed copy on as a worker hands a written one. It never cancels an
+//!    issued `take_landed`: the answer drains the destination's list, so
+//!    one dropped would lose those landings. A stop does not end it
+//!    either: what was staged lands regardless, and is committed.
+//! 4. **The commit pipeline** gathers what each finished action owes the
 //!    two archives into batches of [`Tuning::commit_batch`], one batch in
 //!    flight, committed on both sides at once, and reports each action
 //!    once its batch has landed. A batch that fails fails every action in
@@ -25,13 +39,13 @@
 //!
 //! **Stopping.** Once the stop token is cancelled nothing further starts:
 //! the pump admits nothing, and an admitted action that has no worker slot
-//! yet is dropped with its read. Actions already writing finish and are
-//! committed. A failure that ends the run ([`ReplicaError::ends_run`])
-//! stops the apply the same way.
+//! yet is dropped with its read. Actions already writing or staging
+//! finish, staged ones land, and all are committed. A failure that ends
+//! the run ([`ReplicaError::ends_run`]) stops the apply the same way.
 //!
-//! **Out of space.** A write that finds a side out of space
-//! ([`ReplicaError::out_of_space`]) stops the apply the same way, as soon
-//! as it fails rather than once its batch commits: every later write there
+//! **Out of space.** A write, stage or landing that finds a side out of
+//! space ([`ReplicaError::out_of_space`]) stops the apply the same way, as
+//! soon as it fails rather than once its batch commits: every later write there
 //! would fail alike. The whole apply stops, not just that side's writes:
 //! the pump takes actions in one spread order across both sides, and the
 //! run ends failed either way. What was not attempted is reported once, as
@@ -43,7 +57,7 @@
 //! connections, and a hard stop is dropping this future.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use dsync_domain::{
     Action, FileMeta, FileState, OutOfSpace, OwedCommits, Precondition, RelPath, ReplicaOp,
@@ -51,10 +65,11 @@ use dsync_domain::{
 };
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use tokio::sync::{Semaphore, SemaphorePermit, mpsc};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::replica::{Reading, Replica};
+use crate::replica_error::ReplicaError;
 use crate::run::Events;
 use crate::run::event::{ActionFailure, RunError, RunEvent};
 use crate::run::pair::Pair;
@@ -78,6 +93,108 @@ pub(crate) struct Applier<'r, A, B> {
     stop: CancellationToken,
     /// The first side a write found out of space.
     full: OnceLock<Side>,
+    /// The copies staged onto A and onto B, waiting to land.
+    staging: [Staging; 2],
+}
+
+/// The copies staged onto one side and not yet handed on, by destination
+/// path (SPEC §7.2). A copy is entered before its stage is issued, not
+/// once it answers: its landing can come back on `take_landed` before the
+/// stage's own answer is handled, and must find it there.
+struct Staging {
+    /// Whether copies onto this side stage: its spool had room at lock.
+    on: bool,
+    state: Mutex<StagingState>,
+    /// Signalled when a stage answers and when the last has been issued.
+    changed: Notify,
+}
+
+#[derive(Default)]
+struct StagingState {
+    pending: HashMap<RelPath, Pending>,
+    /// Every stage has been issued and answered: nothing more is entered.
+    closed: bool,
+}
+
+/// A staged copy, with what its commits are built from once it lands.
+struct Pending {
+    action: Action,
+    from: Side,
+    source: FileState,
+    /// Its stage answered: the destination has it queued or landed, so a
+    /// `take_landed` will not answer empty-handed while it waits.
+    staged: bool,
+}
+
+/// What the landing task does next.
+enum Next {
+    /// A staged copy waits to land.
+    Take,
+    /// Copies are on their way into the destination, or more may be.
+    Wait,
+    Done,
+}
+
+impl Staging {
+    fn new(on: bool) -> Staging {
+        Staging {
+            on,
+            state: Mutex::default(),
+            changed: Notify::new(),
+        }
+    }
+
+    fn enter(&self, path: RelPath, action: Action, from: Side, source: FileState) {
+        let pending = Pending {
+            action,
+            from,
+            source,
+            staged: false,
+        };
+        let replaced = lock(&self.state).pending.insert(path, pending);
+        // A plan writes each path at most once (SPEC §7.1), and an aside,
+        // the one action whose written path is not its own, never stages.
+        debug_assert!(replaced.is_none(), "two copies staged onto one path");
+    }
+
+    /// `path`'s stage answered. Its copy may have landed and been handed
+    /// on already.
+    fn staged(&self, path: &RelPath) {
+        if let Some(pending) = lock(&self.state).pending.get_mut(path) {
+            pending.staged = true;
+        }
+        self.changed.notify_one();
+    }
+
+    /// Takes `path`'s copy out: it landed, or its stage failed. `None`
+    /// when it was taken out already.
+    fn take(&self, path: &RelPath) -> Option<Pending> {
+        lock(&self.state).pending.remove(path)
+    }
+
+    fn take_all(&self) -> Vec<(RelPath, Pending)> {
+        lock(&self.state).pending.drain().collect()
+    }
+
+    /// Every stage onto this side has been issued and answered.
+    fn close(&self) {
+        lock(&self.state).closed = true;
+        self.changed.notify_one();
+    }
+
+    /// Asks for landings only while a staged copy waits: `take_landed`
+    /// answers at once when nothing is queued, so asking while a stage is
+    /// still on its way, or between stages, would loop over the link.
+    fn next(&self) -> Next {
+        let state = lock(&self.state);
+        if state.pending.values().any(|pending| pending.staged) {
+            Next::Take
+        } else if state.closed && state.pending.is_empty() {
+            Next::Done
+        } else {
+            Next::Wait
+        }
+    }
 }
 
 /// One admitted action, handed from the pump to a worker with the
@@ -123,10 +240,13 @@ struct Owed {
 impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
     /// `a` and `b` are the two status lists the plan was reconciled from:
     /// what a copy's source and a commit-only's records are read from.
+    /// `spool_room` is each side's, as its lock reported it: copies onto a
+    /// side with room stage, the rest write.
     pub(crate) fn new(
         pair: Pair<'r, A, B>,
         a: &[ScanEntry],
         b: &[ScanEntry],
+        spool_room: [u64; 2],
         tuning: &'r Tuning,
         events: &'r Events,
         stop: CancellationToken,
@@ -143,6 +263,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             events,
             stop,
             full: OnceLock::new(),
+            staging: spool_room.map(|room| Staging::new(room > 0)),
         }
     }
 
@@ -155,9 +276,19 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let (ready, readied) = mpsc::channel(1);
         let (owed, owing) = mpsc::channel(self.tuning.commit_batch.max(1));
         let emptied = Mutex::new(Vec::new());
-        let ((), (), applied) = tokio::join!(
+        // The pipeline ends once every sender is gone: the workers' and
+        // both landing tasks'.
+        let (landed_a, landed_b) = (owed.clone(), owed.clone());
+        let ((), (), (), (), applied) = tokio::join!(
             self.pump(spread_across_folders(actions), &admitted, &budget, ready),
-            self.dispatch(readied, &workers, owed, &emptied),
+            async {
+                self.dispatch(readied, &workers, owed, &emptied).await;
+                for staging in &self.staging {
+                    staging.close();
+                }
+            },
+            self.land(Side::A, landed_a),
+            self.land(Side::B, landed_b),
             self.commit_pipeline(owing, total, total_bytes),
         );
         self.prune(into_inner(emptied)).await;
@@ -256,14 +387,163 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
         let Some(_worker) = worker else {
             return;
         };
-        let outcome = self.perform(prepared, emptied).await;
-        if let Err(failure) = &outcome
+        let done = match prepared {
+            Prepared::Copy {
+                path,
+                from,
+                source,
+                reading,
+            } if self.staging(from.other()).on => {
+                // The slot goes once staged: the landing task hands the
+                // copy on when it lands.
+                match self.stage(action, path, from, source, reading).await {
+                    Some(failed) => failed,
+                    None => return,
+                }
+            }
+            prepared => Owed {
+                outcome: self.perform(prepared, emptied).await,
+                action,
+            },
+        };
+        self.hand_over(done, owed).await;
+    }
+
+    /// Hands a finished action to the pipeline. One that found its side
+    /// out of space stops the apply there and then.
+    async fn hand_over(&self, done: Owed, owed: &mpsc::Sender<Owed>) {
+        if let Err(failure) = &done.outcome
             && let Some(side) = failure.out_of_space()
         {
             let _ = self.full.set(side);
             self.stop.cancel();
         }
-        let _ = owed.send(Owed { action, outcome }).await;
+        let _ = owed.send(done).await;
+    }
+
+    /// Stages a copy's body onto the other side of `from`, expecting what
+    /// the scan saw there, and leaves it to land. The source is checked
+    /// once read exactly as a write's is ([`Self::copy`]). `Some` when the
+    /// stage failed: the copy is done, failed.
+    async fn stage(
+        &self,
+        action: Action,
+        path: RelPath,
+        from: Side,
+        source: FileState,
+        reading: Reading,
+    ) -> Option<Owed> {
+        let onto = from.other();
+        let staging = self.staging(onto);
+        let expect = Precondition::of(self.file_on(onto, &path).as_ref());
+        staging.enter(path.clone(), action, from, source);
+        let (body, moved) = reading.checked(Precondition::of(Some(&source)));
+        match self.pair.stage(onto, &path, body, source, expect).await {
+            Ok(()) => {
+                staging.staged(&path);
+                None
+            }
+            Err(error) => {
+                // Gone already when a failed `take_landed` failed it.
+                let pending = staging.take(&path)?;
+                let failure = if moved.happened() {
+                    ActionFailure::ChangedDuringSync { side: from }
+                } else {
+                    ActionFailure::replica(onto, ReplicaOp::Stage)(error)
+                };
+                Some(Owed {
+                    action: pending.action,
+                    outcome: Err(failure),
+                })
+            }
+        }
+    }
+
+    /// Collects the copies staged onto `onto` as they land, until every
+    /// stage has been issued and every staged copy handed on. An issued
+    /// `take_landed` is always awaited: its answer is the only word of the
+    /// landings in it. One that fails - the link to `onto` gone - fails
+    /// every copy still waiting, uncommitted.
+    async fn land(&self, onto: Side, owed: mpsc::Sender<Owed>) {
+        let staging = self.staging(onto);
+        if !staging.on {
+            return;
+        }
+        loop {
+            match staging.next() {
+                Next::Done => return,
+                // A signal given since the last wait is kept, so one
+                // given between `next` and here is not lost.
+                Next::Wait => staging.changed.notified().await,
+                Next::Take => match self.pair.take_landed(onto).await {
+                    Ok(landings) => {
+                        for (path, landed) in landings.landed {
+                            if let Some(done) = self.landed(onto, &path, landed) {
+                                self.hand_over(done, &owed).await;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let error = Arc::new(error);
+                        for (_, pending) in staging.take_all() {
+                            let failure = ActionFailure::Replica {
+                                side: onto,
+                                op: ReplicaOp::TakeLanded,
+                                source: error.clone(),
+                            };
+                            let done = Owed {
+                                action: pending.action,
+                                outcome: Err(failure),
+                            };
+                            self.hand_over(done, &owed).await;
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// The copy staged onto `onto` at `path`, landed as `landed` says:
+    /// what it owes the archives, or the failure a write would have given.
+    fn landed(
+        &self,
+        onto: Side,
+        path: &RelPath,
+        landed: Result<FileMeta, ReplicaError>,
+    ) -> Option<Owed> {
+        let pending = self.staging(onto).take(path);
+        // Only a staged path lands, and only once.
+        debug_assert!(pending.is_some(), "{path} landed without being staged");
+        let Pending {
+            action,
+            from,
+            source,
+            ..
+        } = pending?;
+        let outcome = landed
+            .map_err(ActionFailure::replica(onto, ReplicaOp::Write))
+            .and_then(|landed| self.copied(path, from, source, landed));
+        Some(Owed { action, outcome })
+    }
+
+    /// What a copy that landed owes the archives, counted as copied.
+    fn copied(
+        &self,
+        path: &RelPath,
+        from: Side,
+        source: FileState,
+        landed: FileMeta,
+    ) -> Result<OwedCommits, ActionFailure> {
+        let owed = OwedCommits::for_copy(path, from, source, landed)?;
+        self.pair.clock.copied(from, landed.size);
+        Ok(owed)
+    }
+
+    fn staging(&self, side: Side) -> &Staging {
+        match side {
+            Side::A => &self.staging[0],
+            Side::B => &self.staging[1],
+        }
     }
 
     /// Starts a copy's source read.
@@ -331,9 +611,7 @@ impl<'r, A: Replica, B: Replica> Applier<'r, A, B> {
             } => {
                 let expect = Precondition::of(self.file_on(from.other(), &path).as_ref());
                 let landed = self.copy(from, &path, &source, reading, expect).await?;
-                let owed = OwedCommits::for_copy(&path, from, source, landed)?;
-                self.pair.clock.copied(from, landed.size);
-                Ok(owed)
+                self.copied(&path, from, source, landed)
             }
             Prepared::CopyAside {
                 from,

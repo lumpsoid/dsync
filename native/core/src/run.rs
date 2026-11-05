@@ -331,7 +331,14 @@ impl Run {
             unfinished: found.map(MarkerRecord::into_writes).unwrap_or_default(),
         };
         let summary = match self
-            .locked(pair, [&info_a, &info_b], options, decider, marked)
+            .locked(
+                pair,
+                [&info_a, &info_b],
+                [locked_a.spool_room, locked_b.spool_room],
+                options,
+                decider,
+                marked,
+            )
             .await
         {
             Ok(summary) => Some(summary),
@@ -361,6 +368,7 @@ impl Run {
         &self,
         pair: Pair<'_, A, B>,
         infos: [&ReplicaInfo; 2],
+        spool_room: [u64; 2],
         options: &EffectiveOptions,
         decider: &mut impl Decider,
         marker: Marked<'_>,
@@ -458,6 +466,7 @@ impl Run {
             pair,
             &a.list,
             &b.list,
+            spool_room,
             &self.tuning,
             &self.events,
             self.stop.graceful.child_token(),

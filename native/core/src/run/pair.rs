@@ -8,6 +8,7 @@ use dsync_domain::{
 };
 
 use crate::body::Body;
+use crate::landings::Landings;
 use crate::replica::{Reading, Replica};
 use crate::replica_error::ReplicaError;
 use crate::run::clock::RunClock;
@@ -78,6 +79,21 @@ impl<A: Replica, B: Replica> Pair<'_, A, B> {
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
         on_side!(self, side, ReplicaOp::Write, replica => replica.write(path, body, source, expect))
+    }
+
+    pub(crate) async fn stage(
+        &self,
+        side: Side,
+        path: &RelPath,
+        body: Body,
+        source: FileState,
+        expect: Precondition,
+    ) -> Result<(), ReplicaError> {
+        on_side!(self, side, ReplicaOp::Stage, replica => replica.stage(path, body, source, expect))
+    }
+
+    pub(crate) async fn take_landed(&self, side: Side) -> Result<Landings, ReplicaError> {
+        on_side!(self, side, ReplicaOp::TakeLanded, replica => replica.take_landed())
     }
 
     pub(crate) async fn delete(

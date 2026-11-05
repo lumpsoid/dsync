@@ -19,10 +19,12 @@ use dsync_core::{
 use dsync_domain::{
     Action, Archive, ArchiveCommit, Bucket, BucketCount, Command, EffectiveOptions, FileMeta,
     FileState, Flags, HostFacts, Location, LockFacts, Platform, Precondition, RelPath,
-    ReplicaLocation, ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, Tuning,
-    WriteStats,
+    ReplicaLocation, ReplicaSpec, RootFacts, RuleSet, RunFlags, ScanEntry, Side, SpoolSetting,
+    Tuning, WriteStats,
 };
 use tempfile::TempDir;
+
+use crate::cut_link::CutLink;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
@@ -120,6 +122,16 @@ impl Site {
     }
 
     pub fn replica_with(&self, side: Side, tuning: Tuning) -> LocalReplica {
+        self.replica_spooling(side, tuning, SpoolSetting::Off)
+    }
+
+    /// [`Site::replica_with`], spooling as `spool` says.
+    pub fn replica_spooling(
+        &self,
+        side: Side,
+        tuning: Tuning,
+        spool: SpoolSetting,
+    ) -> LocalReplica {
         let spec = self.spec(side);
         LocalReplica::open(
             dsync_core::Root::new(spec.root, spec.kind, spec.as_path.clone()).unwrap(),
@@ -130,7 +142,7 @@ impl Site {
             tuning,
             dsync_core::LocalRules {
                 symlinks: dsync_core::Symlinks::AsRuled,
-                spool: dsync_domain::SpoolSetting::Off,
+                spool,
             },
         )
     }
@@ -357,6 +369,10 @@ pub enum Call {
     Scan,
     Read(String),
     Write(String),
+    Stage(String),
+    /// Not a call: a stage answered, staged or failed.
+    Staged(String),
+    TakeLanded,
     Delete(String),
     RemoveEmptyDirs(String),
     Commit(Vec<ArchiveCommit>),
@@ -371,6 +387,8 @@ pub enum Fault {
     Hold(Arc<Semaphore>),
     /// Lets a write land, then reports `size` for it.
     Report(u64),
+    /// Lets the call through, then waits for the gate before answering.
+    HoldAnswer(Arc<Semaphore>),
 }
 
 pub type Hook = Arc<dyn Fn(&Call) -> Option<Fault> + Send + Sync>;
@@ -379,17 +397,47 @@ pub type Hook = Arc<dyn Fn(&Call) -> Option<Fault> + Send + Sync>;
 /// first whether to fail or hold it.
 pub struct Probe<R> {
     inner: R,
-    log: Arc<Mutex<Vec<Call>>>,
+    log: Log,
     hook: Hook,
 }
 
 /// A probe's call log, kept by the test after the probe moves into a run.
 #[derive(Clone)]
-pub struct Log(Arc<Mutex<Vec<Call>>>);
+pub struct Log {
+    calls: Arc<Mutex<Vec<Call>>>,
+    /// The number of calls logged, for [`Log::until`].
+    logged: Arc<tokio::sync::watch::Sender<usize>>,
+}
 
 impl Log {
+    fn new() -> Log {
+        Log {
+            calls: Arc::default(),
+            logged: Arc::new(tokio::sync::watch::Sender::new(0)),
+        }
+    }
+
+    fn push(&self, call: Call) {
+        let mut calls = lock(&self.calls);
+        calls.push(call);
+        self.logged.send_replace(calls.len());
+    }
+
     pub fn calls(&self) -> Vec<Call> {
-        lock(&self.0).clone()
+        lock(&self.calls).clone()
+    }
+
+    /// How many logged calls `wanted` picks.
+    pub fn count(&self, wanted: impl Fn(&Call) -> bool) -> usize {
+        lock(&self.calls).iter().filter(|call| wanted(call)).count()
+    }
+
+    /// Waits until `wanted` picks at least `count` logged calls.
+    pub async fn until(&self, count: usize, wanted: impl Fn(&Call) -> bool) {
+        let mut logged = self.logged.subscribe();
+        while self.count(&wanted) < count {
+            let _ = logged.changed().await;
+        }
     }
 
     pub fn commits(&self) -> Vec<Vec<ArchiveCommit>> {
@@ -409,22 +457,22 @@ impl<R: Replica> Probe<R> {
     }
 
     pub fn with_hook(inner: R, hook: Hook) -> (Probe<R>, Log) {
-        let log = Arc::new(Mutex::new(Vec::new()));
+        let log = Log::new();
         (
             Probe {
                 inner,
                 log: log.clone(),
                 hook,
             },
-            Log(log),
+            log,
         )
     }
 
-    /// Logs `call`; `Err` when the hook fails it, `Ok(size)` when it asks
-    /// a write to report another size.
-    async fn enter(&self, call: Call) -> Result<Option<u64>, ReplicaError> {
+    /// Logs `call`; `Err` when the hook fails it, and the fault still to
+    /// apply once the call is made (`Report`, `HoldAnswer`), if any.
+    async fn enter(&self, call: Call) -> Result<Option<Fault>, ReplicaError> {
         let fault = (self.hook)(&call);
-        lock(&self.log).push(call);
+        self.log.push(call);
         match fault {
             None => Ok(None),
             Some(Fault::Fail(error)) => Err(error),
@@ -432,7 +480,7 @@ impl<R: Replica> Probe<R> {
                 let _ = gate.acquire().await;
                 Ok(None)
             }
-            Some(Fault::Report(size)) => Ok(Some(size)),
+            after => Ok(after),
         }
     }
 }
@@ -496,12 +544,13 @@ impl<R: Replica> Replica for Probe<R> {
         source: FileState,
         expect: Precondition,
     ) -> Result<FileMeta, ReplicaError> {
-        let reported = self.enter(Call::Write(path.as_str().to_owned())).await?;
+        let after = self.enter(Call::Write(path.as_str().to_owned())).await?;
         let landed = self.inner.write(path, body, source, expect).await?;
-        Ok(FileMeta {
-            size: reported.unwrap_or(landed.size),
-            ..landed
-        })
+        let size = match after {
+            Some(Fault::Report(size)) => size,
+            _ => landed.size,
+        };
+        Ok(FileMeta { size, ..landed })
     }
 
     async fn stage(
@@ -511,10 +560,17 @@ impl<R: Replica> Replica for Probe<R> {
         source: FileState,
         expect: Precondition,
     ) -> Result<(), ReplicaError> {
-        self.inner.stage(path, body, source, expect).await
+        let after = self.enter(Call::Stage(path.as_str().to_owned())).await?;
+        let staged = self.inner.stage(path, body, source, expect).await;
+        self.log.push(Call::Staged(path.as_str().to_owned()));
+        if let Some(Fault::HoldAnswer(gate)) = after {
+            let _ = gate.acquire().await;
+        }
+        staged
     }
 
     async fn take_landed(&self) -> Result<Landings, ReplicaError> {
+        self.enter(Call::TakeLanded).await?;
         self.inner.take_landed().await
     }
 
@@ -544,7 +600,7 @@ impl<R: Replica> Replica for Probe<R> {
     }
 
     async fn close(self) -> Result<(), ReplicaError> {
-        lock(&self.log).push(Call::Close);
+        self.log.push(Call::Close);
         self.inner.close().await
     }
 
@@ -581,6 +637,21 @@ pub fn serve_with<S>(site: &Site, stream: S, tuning: Tuning) -> JoinHandle<Resul
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    serve_spooling(site, Transport::split(stream), tuning, SpoolSetting::Off)
+}
+
+/// [`serve_with`] over `transport`, the replica it opens spooling as
+/// `spool` says.
+pub fn serve_spooling<R, W>(
+    site: &Site,
+    transport: Transport<R, W>,
+    tuning: Tuning,
+    spool: SpoolSetting,
+) -> JoinHandle<Result<(), LinkError>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let state = site.state();
     let server = ReplicaServer::new(
         move |spec: ReplicaSpec| {
@@ -595,7 +666,7 @@ where
                     tuning,
                     dsync_core::LocalRules {
                         symlinks: dsync_core::Symlinks::AsRuled,
-                        spool: dsync_domain::SpoolSetting::Off,
+                        spool,
                     },
                 ))
             }
@@ -603,7 +674,36 @@ where
         tuning,
         ServedReads::new(&tuning),
     );
-    tokio::spawn(async move { server.serve(Transport::split(stream)).await })
+    tokio::spawn(async move { server.serve(transport).await })
+}
+
+/// The replica `spec` names, opened with `tuning` and spooling as
+/// `spool` says, served over loopback TCP through a relay the test can
+/// cut; the remote replica talking to it, and the session.
+pub async fn served_through_link(
+    site: &Site,
+    spec: ReplicaSpec,
+    tuning: Tuning,
+    spool: SpoolSetting,
+) -> (RemoteReplica, JoinHandle<Result<(), LinkError>>, CutLink) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let link = CutLink::to(listener.local_addr().unwrap()).await;
+    let (accepted, far) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let _ = accepted.send(stream);
+    });
+    let near = tokio::net::TcpStream::connect(link.at).await.unwrap();
+    let (reader, writer) = with_deadline("accept", far).await.unwrap().into_split();
+    let serving = serve_spooling(site, Transport::new(reader, writer), tuning, spool);
+    let (reader, writer) = near.into_split();
+    let replica = with_deadline(
+        "connect",
+        RemoteReplica::connect(Transport::new(reader, writer), spec, &Tuning::DEFAULT),
+    )
+    .await
+    .unwrap();
+    (replica, serving, link)
 }
 
 /// The duplex buffer: small next to a body's credit, so backpressure
