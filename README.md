@@ -80,6 +80,7 @@ dsync pair show --name <name>     # show this device's payload, wait for a peer,
 dsync pair accept --name <name> <payload>  # pair with the device that payload came from, as <name>
 dsync pair list                   # paired devices; --json for a script
 dsync pair grant <name> <path>    # let a paired device reach a replica root
+dsync pair address <name> <host[:port]>  # where to dial a moved paired device
 dsync pair revoke <name>          # stop trusting it
 dsync archive list                # the archive logs this host keeps
 dsync agent --serve --state-dir <dir>      # keep this instance's state there, not the default
@@ -563,7 +564,10 @@ stays on the list rendered as broken and unrunnable rather than disappearing.
 The address the pairing cached is the port `dsync pair show` listened on, not
 the agent's, so the first run against a fresh pairing needs the agent's
 address typed into the address field on Run setup. A successful connect
-records the new address and later runs use it.
+records the new address and later runs use it. For a paired device that has
+moved, `dsync pair address <name> <host[:port]>` rewrites that address in the
+store — or use the Device page in the app — with no re-pairing; every dial
+reads the store, so the next run follows it.
 
 **Android release builds reach the network.** `android/app/src/main/AndroidManifest.xml`
 declares the `INTERNET` permission — Flutter provides it only to the `debug`

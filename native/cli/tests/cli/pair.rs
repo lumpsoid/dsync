@@ -1,8 +1,8 @@
-//! `dsync pair list | revoke | grant | renew`, and the argument refusals of
-//! every `pair` subcommand, through the binary: the cases of the Dart
-//! `pair_command_test`, `pair_list_command_test`, `pair_grant_command_test`,
-//! `pair_revoke_command_test`, `pair_renew_command_test` and
-//! `pair_accept_command_test`.
+//! `dsync pair list | revoke | grant | address | renew`, and the argument
+//! refusals of every `pair` subcommand, through the binary: the cases of the
+//! Dart `pair_command_test`, `pair_list_command_test`,
+//! `pair_grant_command_test`, `pair_revoke_command_test`,
+//! `pair_renew_command_test` and `pair_accept_command_test`.
 
 use std::time::{Duration, SystemTime};
 
@@ -32,7 +32,9 @@ fn every_pair_subcommand_is_reachable() {
     let site = Site::new();
     let help = site.run(&["pair", "--help"]);
     help.exits(0);
-    for command in ["show", "accept", "list", "revoke", "grant", "renew"] {
+    for command in [
+        "show", "accept", "list", "revoke", "grant", "address", "renew",
+    ] {
         assert!(help.stdout.contains(command), "{command}: {help:#?}");
     }
     site.run(&["pair", "list"]).exits(0);
@@ -216,12 +218,85 @@ fn a_grant_nesting_with_one_already_granted_is_refused_naming_it_and_exits_3() {
 }
 
 #[test]
-fn grant_needs_exactly_two_arguments_and_revoke_one() {
+fn an_address_is_stored_and_shown_by_the_listing_without_disturbing_the_pairing() {
+    let site = Site::new();
+    let device = seed_device(&site.state_dir(), "phone", &["/home/me/notes"], now());
+
+    // A bare host takes the default peer port.
+    let moved = site.run(&["pair", "address", "phone", "10.0.0.7"]);
+    moved.exits(0);
+    assert!(moved.stdout.contains("10.0.0.7:28771"), "{moved:#?}");
+    assert!(
+        moved.stdout.contains(&device.device_id().to_string()),
+        "{moved:#?}"
+    );
+    let stored = paired(&site.state_dir())
+        .get(&device.device_id())
+        .unwrap()
+        .clone();
+    assert_eq!(stored.last_known_address().to_string(), "10.0.0.7:28771");
+    assert_eq!(stored.certificate().der(), device.certificate().der());
+    assert_eq!(stored.granted_roots(), device.granted_roots());
+
+    // An explicit port, an IPv6 literal bracketed; the listing shows both.
+    site.run(&["pair", "address", "phone", "[fe80::1]:4000"])
+        .exits(0);
+    let listed = site.run(&["pair", "list", "--json"]);
+    listed.exits(0);
+    let line: Value = serde_json::from_str(listed.stdout.trim()).unwrap();
+    assert_eq!(
+        line["lastKnownAddress"],
+        serde_json::json!({"host": "fe80::1", "port": 4000})
+    );
+    let stored = paired(&site.state_dir())
+        .get(&device.device_id())
+        .unwrap()
+        .clone();
+    assert_eq!(stored.certificate().der(), device.certificate().der());
+    assert_eq!(stored.granted_roots(), device.granted_roots());
+}
+
+#[test]
+fn addressing_an_unpaired_name_changes_nothing_and_exits_3() {
+    let site = Site::new();
+    seed_device(&site.state_dir(), "phone", &[], now());
+    let before = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    let refused = site.run(&["pair", "address", "not-a-real-name", "10.0.0.7"]);
+    refused.exits(3);
+    assert!(
+        refused
+            .stderr
+            .contains("no paired device named \"not-a-real-name\""),
+        "{refused:#?}"
+    );
+    let after = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn a_malformed_address_is_refused_naming_the_input_and_changes_nothing() {
+    let site = Site::new();
+    seed_device(&site.state_dir(), "phone", &[], now());
+    let before = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    for typed in ["host:notaport", "10.0.0.7:70000", "[fe80::1"] {
+        let refused = site.run(&["pair", "address", "phone", typed]);
+        refused.exits(3);
+        assert!(refused.stderr.contains(typed), "{refused:#?}");
+    }
+    let after = std::fs::read(site.state_dir().join("paired-devices.json")).unwrap();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn grant_and_address_need_exactly_two_arguments_and_revoke_one() {
     let site = Site::new();
     for args in [
         &["pair", "grant", "phone"][..],
         &["pair", "grant"],
         &["pair", "grant", "phone", "/a", "/b"],
+        &["pair", "address", "phone"],
+        &["pair", "address"],
+        &["pair", "address", "phone", "10.0.0.7", "extra"],
         &["pair", "revoke"],
         &["pair", "revoke", "a", "b"],
     ] {

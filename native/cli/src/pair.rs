@@ -1,8 +1,8 @@
 //! `dsync pair` (SPEC §4.4, §11.1): pairing over the enrolment exchange
 //! (`show`, `accept`), and the paired-device store - the security
-//! boundary's data - read (`list`) and changed (`revoke`, `grant`), plus
-//! this host's own certificate (`renew`). Every change goes through
-//! [`PairedDeviceStore::update`], one atomic write each.
+//! boundary's data - read (`list`) and changed (`revoke`, `grant`,
+//! `address`), plus this host's own certificate (`renew`). Every change
+//! goes through [`PairedDeviceStore::update`], one atomic write each.
 //!
 //! Human output goes to stdout and failures to stderr, as the Dart CLI's
 //! did; `show` keeps stdout for the payload line alone.
@@ -16,12 +16,15 @@ use std::time::SystemTime;
 use dsync_core::{
     DeviceIdentityStore, PairedDevice, PairedDeviceStore, PairedDevices, StateDir, resolve_grant,
 };
+use dsync_domain::host_port::PeerAddress;
 use dsync_domain::{
     CertificateExpiry, CertificateOwner, DeviceId, Location, PeerName, PeerNameError,
 };
 use serde_json::{Value, json};
 
-use crate::args::{ListArgs, PairCommand, PairGrantArgs, PairRevokeArgs, StateDirArgs};
+use crate::args::{
+    ListArgs, PairAddressArgs, PairCommand, PairGrantArgs, PairRevokeArgs, StateDirArgs,
+};
 use crate::failure::Failure;
 use crate::host::Host;
 use crate::render::rfc3339;
@@ -34,6 +37,7 @@ pub async fn pair(command: PairCommand, host: &Host) -> Result<u8, Failure> {
         PairCommand::List(args) => list(&args, host),
         PairCommand::Revoke(args) => revoke(&args, host),
         PairCommand::Grant(args) => grant(&args, host),
+        PairCommand::Address(args) => address(&args, host),
         PairCommand::Renew(state) => renew(&state, host),
     }
 }
@@ -185,6 +189,31 @@ fn grant(args: &PairGrantArgs, host: &Host) -> Result<u8, Failure> {
         .update(|devices| devices.grant(&id, root.clone(), resolve_grant))
         .map_err(Failure::error)?;
     println!("granted: \"{}\" may now reach {root}", args.name);
+    Ok(0)
+}
+
+/// `dsync pair address <name> <host[:port]>`: where to dial the device
+/// next, for one that has moved (SPEC §4.4). Local only, like `revoke`;
+/// each dial reads the store, so a re-dial follows it too.
+fn address(args: &PairAddressArgs, host: &Host) -> Result<u8, Failure> {
+    let address = PeerAddress::parse(&args.address).map_err(|error| {
+        Failure::usage(format!(
+            "dsync pair address: not an address: \"{}\": {error}",
+            args.address
+        ))
+    })?;
+    let state = state_dir(&args.state, host)?;
+    let store = PairedDeviceStore::new(&state);
+    let devices = store.load().map_err(Failure::error)?;
+    let id = named(&devices, &args.name).ok_or_else(|| not_paired("address", &args.name))?;
+    let moved = store
+        .update(|devices| {
+            devices.record_address(&id, address.clone())?;
+            Ok(devices.get(&id).cloned())
+        })
+        .map_err(Failure::error)?
+        .ok_or_else(|| not_paired("address", &args.name))?;
+    println!("{}", device_line(&moved));
     Ok(0)
 }
 

@@ -112,6 +112,22 @@ impl PairedDevices {
         Ok(self.device_mut(id)?.record_connection(address, presented)?)
     }
 
+    /// Where to dial the device next, written by hand (SPEC §4.4's
+    /// escape hatch): the certificate already pinned is kept, since none
+    /// was presented.
+    pub fn record_address(
+        &mut self,
+        id: &DeviceId,
+        address: PeerAddress,
+    ) -> Result<(), PairingError> {
+        let pinned = self
+            .get(id)
+            .ok_or(PairingError::NotPaired(*id))?
+            .certificate()
+            .clone();
+        self.record_connection(id, address, pinned)
+    }
+
     pub fn verify(&mut self, id: &DeviceId, at: SystemTime) -> Result<(), PairingError> {
         self.device_mut(id)?.verify(at);
         Ok(())
@@ -349,6 +365,28 @@ mod tests {
     }
 
     #[test]
+    fn recording_an_address_by_hand_keeps_the_certificate_and_the_grants() {
+        let identity = identity();
+        let mut devices = PairedDevices::default();
+        devices.add(device(&identity, "phone")).unwrap();
+        let id = identity.device_id();
+        devices.grant(&id, "/a".to_owned(), as_spelled).unwrap();
+        devices.verify(&id, at(5)).unwrap();
+        let before = devices.get(&id).unwrap().clone();
+
+        devices.record_address(&id, address("10.0.0.9")).unwrap();
+
+        let phone = devices.get(&id).unwrap();
+        assert_eq!(phone.last_known_address(), &address("10.0.0.9"));
+        assert_eq!(phone.certificate(), identity.certificate());
+        assert_eq!(phone.device_id(), id);
+        assert_eq!(phone.name(), &name("phone"));
+        assert!(phone.serves_root("/a"));
+        assert_eq!(phone.verified_at(), Some(at(5)));
+        assert_eq!(phone.paired_at(), before.paired_at());
+    }
+
+    #[test]
     fn verification_is_absent_until_made_and_can_be_taken_back() {
         let mut phone = device(&identity(), "phone");
         assert_eq!(phone.verified_at(), None);
@@ -429,6 +467,10 @@ mod tests {
             not_paired
         );
         assert_eq!(devices.withdraw_grant(&stranger, "/a"), not_paired);
+        assert_eq!(
+            devices.record_address(&stranger, address("10.0.0.9")),
+            not_paired
+        );
         assert_eq!(devices.verify(&stranger, at(1)), not_paired);
         assert_eq!(devices.clear_verification(&stranger), not_paired);
     }

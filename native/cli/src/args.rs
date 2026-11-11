@@ -63,6 +63,9 @@ pub enum PairCommand {
     /// Authorize a paired device to reach a replica root on this host
     /// (SPEC §4.4).
     Grant(PairGrantArgs),
+    /// Point a paired device at a new address (SPEC §4.4). Local only;
+    /// the next dial reads it from this host's store.
+    Address(PairAddressArgs),
     /// Re-issue this host's identity certificate under its existing key
     /// (SPEC §4.4). The device id does not change; paired devices keep
     /// their pairing.
@@ -171,6 +174,19 @@ pub struct PairGrantArgs {
     /// this host's home, as a peer's requested root does.
     #[arg(value_name = "PATH")]
     pub path: String,
+    #[command(flatten)]
+    pub state: StateDirArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct PairAddressArgs {
+    /// The paired device's name (see `dsync pair list`).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Where to dial it next: host or host:port, an IPv6 literal bracketed
+    /// when it has a port. No port means the default 28771.
+    #[arg(value_name = "HOST")]
+    pub address: String,
     #[command(flatten)]
     pub state: StateDirArgs,
 }

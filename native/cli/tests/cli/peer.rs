@@ -58,6 +58,16 @@ fn devices_paired_through_the_commands_sync_over_peer_until_revoked() {
     );
 
     remote.run(&["pair", "grant", "phone", &shared]).exits(0);
+
+    // A store holding a dead address, pointed back at the serving one by
+    // hand: the next dial reads it (SPEC §4.4's escape hatch).
+    local
+        .run(&["pair", "address", "desktop", "127.0.0.1:1"])
+        .exits(0);
+    let serving = format!("127.0.0.1:{}", served_port(&serving));
+    local
+        .run(&["pair", "address", "desktop", &serving])
+        .exits(0);
     sync(&local, &shared).exits(0);
     assert_eq!(remote.read("shared/top.txt"), "from local");
     assert_eq!(remote.read("shared/notes/deep.txt"), "nested");
