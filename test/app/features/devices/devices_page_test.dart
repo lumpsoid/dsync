@@ -13,7 +13,7 @@ import 'package:dsync/app/profile_row.dart';
 import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -21,7 +21,6 @@ import '../../support/affordances.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
-import '../../support/tooltip.dart';
 
 /// Rendering tests for the Devices page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controllers are pinned with
@@ -464,7 +463,7 @@ void main() {
 
     // Revoking is on the device's own page, behind a confirmation: it sat
     // one mis-tap from "Set up run" here.
-    expect(byTooltip('Revoke'), findsNothing);
+    expect(find.byTooltip('Revoke'), findsNothing);
     expect(find.byIcon(Icons.delete_outline), findsNothing);
     expect(controller.state.error, isNull);
   });

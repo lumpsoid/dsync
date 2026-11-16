@@ -1,12 +1,11 @@
 import 'package:dsync/app/path_text.dart';
 import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/clipboard.dart';
 import 'support/path_text.dart';
-import 'support/tooltip.dart';
 
 /// [PathText] against boxes of known width. The test font draws every
 /// character as a square of the font size, so at 10px a box [n] × 10 wide
@@ -34,7 +33,7 @@ void main() {
     await tester.pumpWidget(boxed(20, plain));
 
     expect(shownPath(tester, long), '/…/files/notes');
-    expect(byTooltip(long), findsOneWidget);
+    expect(find.byTooltip(long), findsOneWidget);
   });
 
   testWidgets('the same path in a box wide enough is shown whole, with no '
@@ -58,7 +57,7 @@ void main() {
 
     await tester.pumpWidget(boxed(10, plain));
     expect(shownPath(tester, long), '/…/notes');
-    expect(byTooltip(long), findsOneWidget);
+    expect(find.byTooltip(long), findsOneWidget);
   });
 
   testWidgets('the tooltip opens on mouse hover', (tester) async {
@@ -84,7 +83,7 @@ void main() {
     );
 
     expect(
-      tester.widget<Tooltip>(byTooltip(long)).triggerMode,
+      tester.widget<Tooltip>(find.byTooltip(long)).triggerMode,
       TooltipTriggerMode.manual,
     );
     await tester.longPress(pathText(long));

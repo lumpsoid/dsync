@@ -47,7 +47,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/theme_preference.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_folder_picker.dart';
