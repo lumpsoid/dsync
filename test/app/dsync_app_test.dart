@@ -150,11 +150,12 @@ void main() {
   testWidgets('renders the bootstrap screen while loading', (tester) async {
     await tester.pumpWidget(const DsyncApp());
 
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(tester.hasRunningAnimations, isFalse);
+    expect(find.byKey(const Key('bootstrap-loading')), findsOneWidget);
     expect(find.byType(DevicesPage), findsNothing);
   });
 
-  testWidgets('the bootstrap spinner says what it is waiting on', (
+  testWidgets('the bootstrap screen says what it is waiting on', (
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
@@ -162,8 +163,8 @@ void main() {
     await tester.pumpWidget(const DsyncApp());
 
     expect(
-      tester.getSemantics(find.byType(CircularProgressIndicator)),
-      isSemantics(label: 'Starting dsync'),
+      tester.getSemantics(find.byKey(const Key('bootstrap-loading'))),
+      isSemantics(label: 'Starting dsync…'),
     );
     semantics.dispose();
   });
@@ -177,7 +178,7 @@ void main() {
     await tester.pumpWidget(const DsyncApp());
 
     final scheme = Theme.of(
-      tester.element(find.byType(CircularProgressIndicator)),
+      tester.element(find.byKey(const Key('bootstrap-loading'))),
     ).colorScheme;
     expect(scheme.brightness, Brightness.dark);
     expect(
@@ -193,18 +194,18 @@ void main() {
     await tester.pumpWidget(const DsyncApp());
 
     Brightness brightness() =>
-        Theme.of(tester.element(find.byType(CircularProgressIndicator)))
+        Theme.of(tester.element(find.byKey(const Key('bootstrap-loading'))))
             .colorScheme
             .brightness;
 
     app.themeSaved(ThemePreference.light);
-    // The spinner never settles; one theme animation's worth is enough.
+    // One theme animation's worth is enough.
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(brightness(), Brightness.light);
 
     app.themeSaved(ThemePreference.system);
-    // The spinner never settles; one theme animation's worth is enough.
+    // One theme animation's worth is enough.
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(brightness(), Brightness.dark);
@@ -225,7 +226,7 @@ void main() {
       find.text('paired-device store /x/paired-devices.json cannot be read'),
       findsOneWidget,
     );
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('bootstrap-loading')), findsNothing);
     expect(find.byType(DevicesPage), findsNothing);
   });
 
@@ -255,14 +256,13 @@ void main() {
       () => app.state.bootstrap is AppBootstrapReady,
       what: 'the retried bootstrap',
     );
-    // Not `pumpAndSettle`: the gate shows an indefinite spinner while the
-    // retry is in flight, and there is a route transition to finish once
-    // it is not. Frames, bounded.
+    // A bounded pump rather than `pumpAndSettle`: one route transition's
+    // worth of frames is all that is left once the retry lands.
     await tester.pump(const Duration(seconds: 1));
 
     expect(find.byType(ProfilesPage), findsOneWidget);
     expect(find.byKey(const Key('bootstrap-failed')), findsNothing);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('bootstrap-loading')), findsNothing);
   });
 
   testWidgets('renders the profiles home once ready, and follows the gate', (
@@ -275,7 +275,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(ProfilesPage), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const Key('bootstrap-loading')), findsNothing);
     expect(find.text('No saved sync profiles yet.'), findsOneWidget);
   });
 
