@@ -105,9 +105,9 @@ class _BootstrapGate extends StatelessWidget {
       listenable: state,
       builder: (context, _) => switch (state.bootstrap) {
         AppBootstrapLoading() => const _BootstrapShell(
-          // The gate's spinner is the whole screen, so its label is the
-          // only thing a screen reader has to go on here.
-          child: CircularProgressIndicator(semanticsLabel: 'Starting dsync'),
+          // An indeterminate spinner as the first frame hung Flutter 3.50.0
+          // at startup, so the loading state is plain text.
+          child: Text('Starting dsync…', key: Key('bootstrap-loading')),
         ),
         AppBootstrapFailed(:final message) => _BootstrapShell(
           child: _BootstrapFailure(
