@@ -10,7 +10,7 @@ import 'package:dsync/app/features/shared_folders/shared_folders_scope.dart';
 import 'package:dsync/app/features/shared_folders/shared_folders_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,6 +19,7 @@ import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/path_text.dart';
 import '../../support/pump_until.dart';
+import '../../support/tooltip.dart';
 
 /// The Shared folders page as a rendering test: devices are pushed into
 /// `AppState` already rendered and the page is pumped directly, per the
@@ -149,7 +150,7 @@ void main() {
     expect(shown, isNot(long));
     expect(shown, startsWith('/…/'));
     expect(shown, endsWith('/files/notes'));
-    expect(find.byTooltip(long), findsOneWidget);
+    expect(byTooltip(long), findsOneWidget);
   });
 
   testWidgets('copying a folder gives the stored path, not the label', (

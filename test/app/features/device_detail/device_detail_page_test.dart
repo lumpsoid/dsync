@@ -10,7 +10,7 @@ import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/run_setup/folder_picker.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/affordances.dart';
@@ -19,6 +19,7 @@ import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/path_text.dart';
 import '../../support/pump_until.dart';
+import '../../support/tooltip.dart';
 import '../../../support/fake_folder_picker.dart';
 
 /// The Device page as a rendering test: rows are pushed into `AppState`
@@ -166,7 +167,7 @@ void main() {
       find.byKey(const Key('device-root-/home/me/photos')),
       findsOneWidget,
     );
-    expect(find.byTooltip('Stop sharing'), findsNWidgets(2));
+    expect(byTooltip('Stop sharing'), findsNWidgets(2));
   });
 
   testWidgets('a long folder keeps its end, not its shared prefix', (
@@ -187,7 +188,7 @@ void main() {
     expect(shown, isNot(long));
     expect(shown, startsWith('/…/'));
     expect(shown, endsWith('/files/notes'));
-    expect(find.byTooltip(long), findsOneWidget);
+    expect(byTooltip(long), findsOneWidget);
   });
 
   testWidgets('withdrawing a long folder names it in full in the dialog, '
@@ -741,7 +742,7 @@ void main() {
 
     // Beside the confirmed mark, not instead of it.
     expect(find.byKey(const Key('device-detail-verified')), findsOneWidget);
-    expect(find.byTooltip('Copy device id'), findsOneWidget);
+    expect(byTooltip('Copy device id'), findsOneWidget);
     await tester.tap(find.byKey(const Key('device-detail-id-copy')));
     await tester.pump();
     expect(clipboard.last, phone.deviceId);

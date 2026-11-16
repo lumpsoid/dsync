@@ -63,7 +63,7 @@ import 'package:dsync/app/rust/bindings/bindings.dart' show assignRustSignal;
 import 'package:dsync/app/run_keep_alive.dart';
 import 'package:dsync/app/screen_wake.dart';
 import 'package:dsync/app/warn_size.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;

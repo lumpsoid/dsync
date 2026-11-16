@@ -10,7 +10,7 @@ import 'package:dsync/app/features/serve/serve_scope.dart';
 import 'package:dsync/app/features/serve/serve_view_state.dart';
 import 'package:dsync/app/paired_device_row.dart';
 import 'package:dsync/app/peer_port.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/affordances.dart';

@@ -17,7 +17,7 @@ import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:dsync/app/warn_size.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -28,6 +28,7 @@ import '../../support/affordances.dart';
 import '../../support/fake_head.dart';
 import '../../support/fake_hub.dart';
 import '../../support/path_text.dart';
+import '../../support/tooltip.dart';
 import 'run_fixtures.dart' hide pump;
 
 /// Rendering tests for the Run page, driven the way the scope contract in
@@ -1052,7 +1053,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const Key('run-header')),
-        matching: find.byTooltip(longRoot),
+        matching: byTooltip(longRoot),
       ),
       findsOneWidget,
     );
@@ -1523,7 +1524,7 @@ void main() {
     expect(remote.data, startsWith('~/…/'));
     expect(remote.data, endsWith('/nested/folder'));
     expect(
-      find.descendant(of: entry, matching: find.byTooltip(longRemote)),
+      find.descendant(of: entry, matching: byTooltip(longRemote)),
       findsOneWidget,
     );
   });
@@ -2702,8 +2703,8 @@ void main() {
 
       // The keys are shown where the choices are: in the tooltips, and
       // in the bar's legend.
-      expect(find.byTooltip('Reverse (R)'), findsNWidgets(2));
-      expect(find.byTooltip('Skip (S)'), findsNWidgets(3));
+      expect(byTooltip('Reverse (R)'), findsNWidgets(2));
+      expect(byTooltip('Skip (S)'), findsNWidgets(3));
       final legend = tester
           .widget<Text>(find.byKey(const Key('run-review-keys')))
           .data!;
@@ -2729,8 +2730,8 @@ void main() {
       );
       expect(find.text('Path'), findsNothing);
       expect(find.byKey(const Key('run-review-keys')), findsNothing);
-      expect(find.byTooltip('Reverse'), findsNWidgets(2));
-      expect(find.byTooltip('Reverse (R)'), findsNothing);
+      expect(byTooltip('Reverse'), findsNWidgets(2));
+      expect(byTooltip('Reverse (R)'), findsNothing);
       // The list's own column, as before.
       expect(
         tester.getTopRight(find.byKey(const Key('run-confirm'))).dx,

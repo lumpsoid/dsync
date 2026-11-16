@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:qr/qr.dart';
 
 /// A QR symbol, painted from an already-encoded [QrImage] (SPEC §4.4).
