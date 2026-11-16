@@ -4,8 +4,7 @@
 # case folding — are actually observed rather than reasoned about.
 #
 # Flutter is pinned to the release whose bundled Dart is exactly the
-# `sdk: 3.13.3` pubspec.yaml pins (3.47.3 and 3.47.4 both ship it; this is
-# the later one).
+# `sdk: 3.14.0` pubspec.yaml pins (3.50.0).
 #
 # `cargo` gates native/ (the Rust workspace: dsync-domain, dsync-core,
 # dsync-cli and hub) on the same three OSes — the CLI and the core now live
@@ -18,7 +17,7 @@ on:
   pull_request:
 
 env:
-  FLUTTER_VERSION: 3.47.4
+  FLUTTER_VERSION: 3.50.0
 
 jobs:
   flutter-test:
