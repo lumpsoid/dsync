@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
 /// How wide a page's content may grow before it stops stretching and sits in

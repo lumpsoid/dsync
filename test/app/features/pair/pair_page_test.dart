@@ -11,7 +11,7 @@ import 'package:dsync/app/features/pair/pair_view_state.dart';
 import 'package:dsync/app/features/pair/scan_code_page.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 

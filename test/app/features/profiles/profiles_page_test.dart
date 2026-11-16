@@ -13,7 +13,7 @@ import 'package:dsync/app/unsaved_run_row.dart';
 import 'package:dsync/app/core_link/models/last_run.dart';
 import 'package:dsync/app/core_link/models/root_kind.dart';
 import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -22,7 +22,6 @@ import '../../support/fake_hub.dart';
 import '../../../support/fake_folder_picker.dart';
 import '../../support/clipboard.dart';
 import '../../support/fake_head.dart';
-import '../../support/tooltip.dart';
 
 /// Rendering tests for the profiles home, driven the way the scope contract
 /// in `app_scope.dart` intends: the controllers are pinned with
@@ -530,7 +529,7 @@ void main() {
     app.state.recordProfiles([ok()]);
     await pumpPage(tester);
 
-    await tester.tap(byTooltip('Delete profile'));
+    await tester.tap(find.byTooltip('Delete profile'));
     await tester.pumpAndSettle();
     expect(find.text('Delete weekly?'), findsOneWidget);
 

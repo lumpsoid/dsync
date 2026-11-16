@@ -9,7 +9,7 @@ import 'package:dsync/app/features/file_diff/file_diff_page.dart';
 import 'package:dsync/app/features/file_diff/file_diff_scope.dart';
 import 'package:dsync/app/features/file_diff/file_diff_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_hub.dart';

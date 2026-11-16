@@ -9,7 +9,7 @@ import 'package:dsync/app/features/archives/archives_view_state.dart';
 import 'package:dsync/app/focus_ring.dart';
 import 'package:dsync/app/pop_on_escape.dart';
 import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,7 +18,6 @@ import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
 import '../../support/path_text.dart';
-import '../../support/tooltip.dart';
 
 /// Rendering tests for the Archives page, driven the way the scope contract
 /// in `app_scope.dart` intends: the controller is pinned with
@@ -86,7 +85,7 @@ void main() {
   ) async {
     await pumpPage(tester);
 
-    expect(byTooltip('Refresh (F5)'), findsNothing);
+    expect(find.byTooltip('Refresh (F5)'), findsNothing);
   });
 
   testWidgets('F5 asks for the listing again', (tester) async {
@@ -875,7 +874,7 @@ void main() {
     await tester.pump();
 
     expect(shownPath(tester, long), isNot(long));
-    expect(byTooltip(long), findsOneWidget);
+    expect(find.byTooltip(long), findsOneWidget);
     await tester.longPress(pathText(long));
     await tester.pumpAndSettle();
 

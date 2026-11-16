@@ -15,7 +15,7 @@ import 'package:dsync/app/features/run_setup/run_setup_view_state.dart';
 import 'package:dsync/app/readable_width.dart';
 import 'package:dsync/app/run_request.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,7 +25,6 @@ import '../../../support/fake_folder_picker.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
 import '../../support/path_text.dart';
-import '../../support/tooltip.dart';
 
 /// Rendering tests for the Run setup page, driven the way the scope
 /// contract in `app_scope.dart` intends: the controllers are pinned with
@@ -411,7 +410,7 @@ void main() {
     expect(shown, isNot(picked));
     expect(shown, startsWith('/…/'));
     expect(shown, endsWith('/camera-roll'));
-    expect(byTooltip(picked), findsOneWidget);
+    expect(find.byTooltip(picked), findsOneWidget);
   });
 
   testWidgets('a folder the head cannot use is a snackbar with a way to fix '

@@ -1,4 +1,4 @@
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 
 /// Which brightness the app draws in: the device's own choice, or one the
 /// user fixed on the Settings page.

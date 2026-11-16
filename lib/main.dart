@@ -2,7 +2,7 @@ import 'package:dsync/app/app_scope.dart';
 import 'package:dsync/app/dsync_app.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart';
 import 'package:dsync/app/uncaught_errors.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/material.dart';
 import 'package:rinf/rinf.dart';
 
 /// Entrypoint of the Flutter head. Flutter requires this file at this path;
