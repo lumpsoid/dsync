@@ -8,7 +8,7 @@ import 'package:dsync/app/features/this_device/this_device_page.dart';
 import 'package:dsync/app/features/this_device/this_device_scope.dart';
 import 'package:dsync/app/features/this_device/this_device_view_state.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,6 +17,7 @@ import '../../support/clipboard.dart';
 import '../../support/fake_hub.dart';
 import '../../support/fake_head.dart';
 import '../../support/focus.dart';
+import '../../support/tooltip.dart';
 
 /// The This device page as a rendering test: the identity is pushed into
 /// `AppState` as an already-rendered row and the page is pumped directly,
@@ -205,7 +206,7 @@ void main() {
       controller.state.recordStateDirPath('/home/me/.local/state/dsync');
       await tester.pump();
 
-      expect(find.byTooltip('Copy device id'), findsOneWidget);
+      expect(byTooltip('Copy device id'), findsOneWidget);
       await tester.tap(find.byKey(const Key('this-device-id-copy')));
       await tester.pump();
       expect(clipboard, ['a1b2:c3d4']);
@@ -214,7 +215,7 @@ void main() {
       await tester.tap(find.byKey(const Key('this-device-state-dir-copy')));
       await tester.pump();
       expect(clipboard.last, '/home/me/.local/state/dsync');
-      expect(find.byTooltip('Copy state directory path'), findsOneWidget);
+      expect(byTooltip('Copy state directory path'), findsOneWidget);
     });
   });
 }

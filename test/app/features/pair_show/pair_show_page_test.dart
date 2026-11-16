@@ -13,7 +13,7 @@ import 'package:dsync/app/features/pair_show/pairing_offer.dart';
 import 'package:dsync/app/features/pair_show/qr_symbol.dart';
 import 'package:dsync/app/peer_port.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 

@@ -3,7 +3,7 @@ import 'package:dsync/app/core_link/models/filter_row.dart';
 import 'package:dsync/app/features/run_setup/file_choice.dart';
 import 'package:dsync/app/features/run_setup/file_chooser.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_folder_picker.dart';

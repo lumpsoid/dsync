@@ -10,7 +10,7 @@ import 'package:dsync/app/features/filters/filters_scope.dart';
 import 'package:dsync/app/features/filters/filters_view_state.dart';
 import 'package:dsync/app/rust/bindings/bindings.dart' as wire;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
