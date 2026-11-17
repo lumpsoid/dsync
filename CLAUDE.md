@@ -159,7 +159,7 @@ add more instances, don't remove existing ones ad hoc.
 - Minimal, targeted changes over rewrites. Touch only what the task needs.
 - Direct responses, no padding.
 - Verify before reporting done: re-read what you changed, run the project's
-  analyze/lint/test gate.
+  analyze/lint/test gate (`scripts/check.sh` runs all of CI's, in order).
 - Reaching for a suppression comment (`// ignore:`, `# noqa`, `@ts-ignore`) to
   silence a *style* lint usually means you misremembered a language feature.
   Check how the surrounding code already solves it before suppressing anything.
