@@ -276,7 +276,7 @@ fn render_replica(out: &mut String, side: Side, replica: &ReplicaMetrics, wall: 
         "operation", "count", "total", "mean", "max"
     );
     let (waits, mut work): (Vec<_>, Vec<_>) = replica.ops.iter().partition(|(op, _)| op.is_wait());
-    work.sort_by(|x, y| y.1.total.cmp(&x.1.total));
+    work.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.total));
     for (op, stats) in work {
         render_op(out, *op, stats);
     }

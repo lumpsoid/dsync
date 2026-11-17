@@ -105,7 +105,7 @@ impl Inbound {
     pub fn push(&self, piece: Piece) -> Result<bool, Overrun> {
         if let Piece::Chunk(bytes) = &piece {
             self.credit
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                     left.checked_sub(bytes.len())
                 })
                 .map_err(|_| Overrun)?;

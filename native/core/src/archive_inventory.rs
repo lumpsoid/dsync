@@ -80,7 +80,7 @@ impl ArchiveInventory {
                 last_modified: metadata.modified()?,
             });
         }
-        archives.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+        archives.sort_by_key(|archive| std::cmp::Reverse(archive.last_modified));
         Ok(archives)
     }
 

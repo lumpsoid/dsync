@@ -302,7 +302,10 @@ async fn an_unpaired_device_id_fails_before_any_socket() {
     };
 
     assert_eq!(error.side, Side::B);
-    let ConnectFailure::Peer(PeerDialError::NotPaired(id)) = &error.failure else {
+    let ConnectFailure::Peer(dial) = &error.failure else {
+        panic!("{error:?}");
+    };
+    let PeerDialError::NotPaired(id) = &**dial else {
         panic!("{error:?}");
     };
     assert_eq!(*id, phone.device_id());
@@ -340,8 +343,10 @@ async fn a_paired_device_whose_address_refuses_reports_that_address() {
         panic!("connected to a closed port");
     };
 
-    let ConnectFailure::Peer(PeerDialError::Unreachable { address: tried, .. }) = &error.failure
-    else {
+    let ConnectFailure::Peer(dial) = &error.failure else {
+        panic!("{error:?}");
+    };
+    let PeerDialError::Unreachable { address: tried, .. } = &**dial else {
         panic!("{error:?}");
     };
     assert_eq!(tried, &address);
