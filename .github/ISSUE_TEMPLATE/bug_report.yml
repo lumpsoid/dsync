@@ -1,0 +1,49 @@
+name: Bug report
+description: Something dsync does wrong.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        `dsync --version` for the CLI; in the app, Settings → Version. Both
+        look like `0.1.0 (2391c1d)`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and version on each side of the sync, and the transport (local, ssh://, unix://, peer://).
+      placeholder: Android 15 ↔ Arch Linux, peer://
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what dsync did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. dsync sync a/ b/
+        2. ...
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        From the app: Settings → Copy diagnostics, pasted here. It holds the
+        version, platform, recent errors and sync events, no file contents.
+      render: text
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The command's output or the app's error text. Remove any paths or names you don't want public.
+      render: text
