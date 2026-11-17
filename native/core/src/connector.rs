@@ -91,14 +91,21 @@ pub enum ConnectFailure {
         source: io::Error,
     },
     /// SPEC §4.4's distinct failures: not paired, unreachable at the
-    /// address tried, the wrong device, a certificate out of date.
+    /// address tried, the wrong device, a certificate out of date. Boxed:
+    /// it is by far the largest variant, and every `Result` carries it.
     #[error(transparent)]
-    Peer(#[from] PeerDialError),
+    Peer(Box<PeerDialError>),
     /// A `peer://` side on a connector given no identity to dial with.
     #[error("peer:// locations need this host's device identity")]
     NoIdentity,
     #[error("unix:// sockets are not available on this platform")]
     NoUnixSockets,
+}
+
+impl From<PeerDialError> for ConnectFailure {
+    fn from(error: PeerDialError) -> Self {
+        ConnectFailure::Peer(Box::new(error))
+    }
 }
 
 impl ConnectFailure {

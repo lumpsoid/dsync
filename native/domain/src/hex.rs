@@ -17,8 +17,9 @@ pub(crate) fn decode<const N: usize>(text: &str) -> Option<[u8; N]> {
         return None;
     }
     let mut bytes = [0u8; N];
-    for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
-        *byte = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    let (pairs, _) = digits.as_chunks::<2>();
+    for (byte, [high, low]) in bytes.iter_mut().zip(pairs) {
+        *byte = (nibble(*high)? << 4) | nibble(*low)?;
     }
     Some(bytes)
 }

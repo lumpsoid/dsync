@@ -46,7 +46,7 @@ fn connect(failure: ConnectFailure) -> ReconnectCause {
 }
 
 fn dial(error: PeerDialError) -> ReconnectCause {
-    connect(ConnectFailure::Peer(error))
+    connect(error.into())
 }
 
 fn device() -> PeerName {
