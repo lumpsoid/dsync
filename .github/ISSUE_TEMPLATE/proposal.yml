@@ -1,0 +1,28 @@
+name: Proposal
+description: A feature or a change, to discuss before anyone writes code.
+labels: [proposal]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: How dsync could solve it. Rough is fine.
+    validations:
+      required: true
+  - type: dropdown
+    id: implement
+    attributes:
+      label: Would you implement it?
+      options:
+        - Yes, with some guidance
+        - Maybe
+        - No, just suggesting
+    validations:
+      required: true

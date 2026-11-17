@@ -78,58 +78,69 @@ key.
 
 ## Cutting a release
 
-1. **Pass the gates** on the release commit: `dart analyze`, `flutter test`,
-   and in `native/` `cargo fmt --check`, `cargo clippy --workspace
-   --all-targets -- -D warnings`, `cargo test --workspace`.
-2. **Run the phone release check** on a test device — README, "Release check on
-   a phone". It needs a phone and a person to plug it in, so no CI runs it; it
-   is the gate before every release.
-3. **Bump the version** in `pubspec.yaml`: `version: X.Y.Z+N`. `N` is Android's
-   versionCode and must be higher than every published release's, or the
-   update will not install. Commit it (`chore: version X.Y.Z`). It is the one
-   version source: `dsync --version` and the app's Settings page read `X.Y.Z`
-   from it at build time (`native/version/build.rs`), followed by the commit
-   built from; the crates' own `Cargo.toml` versions are never shown.
-4. **Build and verify** on each host (Linux, then macOS and Windows for their
-   desktop apps and CLIs):
+1. **Run the phone release check** on a test device
+   ([docs/development.md](docs/development.md), "Release check on a phone").
+   It needs a phone and a person to plug it in, so no CI runs it; it is the
+   gate before every release.
+2. **Write the notes**: everything users will notice is under
+   `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+3. **Bump the version** on trunk:
 
    ```sh
-   scripts/release.sh
+   scripts/version.sh bump X.Y.Z
+   git commit -am 'chore(release): X.Y.Z'
    ```
 
-   Its `android` target runs `scripts/release-android.sh`, which builds `build/app/outputs/flutter-apk/app-release.apk` and
-   `build/app/outputs/bundle/release/app-release.aab`, checks each has exactly
-   one signer and that it is the release key (`apksigner verify
-   --print-certs` for the APK, `keytool -printcert -jarfile` for the AAB), and
-   prints both paths with their SHA-256.
-5. **Tag and publish**, with every host's artifacts gathered in `dist/X.Y.Z/`:
+   It sets `pubspec.yaml` to `X.Y.Z+N` with `N` one higher (Android's
+   versionCode, which must grow or the update will not install), sets the
+   five shipped crates to `X.Y.Z`, refreshes `native/Cargo.lock` and turns
+   `[Unreleased]` into `[X.Y.Z] - <today>`. `dsync --version` and the app's
+   Settings page show `X.Y.Z (<commit>)` (`native/version/build.rs`).
+4. **Tag**:
 
    ```sh
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   gh release create vX.Y.Z dist/X.Y.Z/*
+   scripts/tag-release.sh
+   git push origin trunk vX.Y.Z
    ```
+
+   It refuses a dirty tree, a branch other than trunk and disagreeing
+   versions, runs `scripts/check.sh`, and makes an annotated `vX.Y.Z` whose
+   message is the changelog section.
+5. **CI publishes it.** The release workflow (below) builds every platform
+   and creates the GitHub release. Check the APK's certificate once it is up:
+   `apksigner verify --print-certs dsync-X.Y.Z-android.apk` must print
+   `RELEASE_CERT_SHA256`.
+
+To build locally instead, or to try the pipeline, `scripts/release.sh` builds
+everything this host can into `dist/X.Y.Z/` (see "Artifacts" above);
+`--allow-dirty` builds from uncommitted changes, and such artifacts are never
+published.
 
 ## CI
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) runs on every
-`v*` tag: it decodes the keystore into `$RUNNER_TEMP`, runs
-`scripts/release-android.sh`, deletes the keystore and uploads the APK and AAB
-as run artifacts. It needs three repository secrets:
+`vX.Y.Z` tag. It fails unless the tag matches `pubspec.yaml`; builds Android
+(signed, through `scripts/release-android.sh`), the Linux app with both Linux
+CLIs, and the macOS and Windows apps with their CLIs, each through
+`scripts/release.sh`; then writes one `SHA256SUMS` over all of them and
+publishes the GitHub release with the tag's annotation as its notes.
 
-- `ANDROID_KEYSTORE_BASE64` — `base64 -w0 ~/.config/dsync/release.jks`
+It needs three repository secrets, and fails without them rather than
+publish a debug-signed APK:
+
+- `ANDROID_KEYSTORE_BASE64`: `base64 -w0 ~/.config/dsync/release.jks`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_PASSWORD`
 
 ```sh
-base64 -w0 ~/.config/dsync/release.jks | gh secret set ANDROID_KEYSTORE_BASE64
-gh secret set ANDROID_KEYSTORE_PASSWORD
-gh secret set ANDROID_KEY_PASSWORD
+base64 -w0 ~/.config/dsync/release.jks | gh secret set ANDROID_KEYSTORE_BASE64 -R lumpsoid/dsync
+gh secret set ANDROID_KEYSTORE_PASSWORD -R lumpsoid/dsync
+gh secret set ANDROID_KEY_PASSWORD -R lumpsoid/dsync
 ```
 
-**The workflow is untested**: it was written before the repository had a
-remote. Expect to fix it on its first run, and check the artifact's
-fingerprint by hand that time (`apksigner verify --print-certs`).
+**The workflow has not run yet.** Expect to fix it on its first tag (the Linux
+build packages, the macOS and Windows runners), and check the APK's
+fingerprint by hand that time.
 
 ## Testing the release script without the real key
 
@@ -138,3 +149,34 @@ point the three environment variables at it, and run the script with
 `DSYNC_EXPECTED_CERT_SHA256` set to the throwaway certificate's SHA-256. Without
 that override the script must fail, naming the fingerprint mismatch. Delete the
 throwaway keystore afterwards.
+
+## Maintaining
+
+The other jobs, in the order they come up.
+
+**Fresh checkout.** Install rustup and Flutter 3.47.9, then `flutter pub get`
+and `scripts/check.sh`. For release builds, restore the key (above) and write
+`android/key.properties`.
+
+**Everyday.** Branch from trunk, keep `scripts/check.sh` green, merge. A
+change users will notice adds a line under `[Unreleased]` in the changelog.
+
+**Dependency updates.** Dependabot opens weekly pull requests for cargo, pub,
+Gradle and GitHub Actions, minor and patch grouped. Some things move together
+and Dependabot cannot see it:
+
+- **rinf**: the Dart package (`pubspec.yaml`, `rinf: 8.10.1`), the vendored
+  copy in `third_party/rinf` that `dependency_overrides` points at, the crate
+  in `native/hub/Cargo.toml` (`rinf = "=8.10.1"`), and the `rinf` CLI that
+  regenerates `lib/app/rust/bindings/`. Re-vendor and re-apply the patch in
+  `third_party/rinf/PATCHED.md`, or drop the override once rinf ships the fix.
+- **Flutter**: `FLUTTER_VERSION` in both workflows, and the `sdk:` pin in
+  `pubspec.yaml`, which must be the Dart SDK that Flutter release bundles.
+- **Gradle, AGP and Kotlin** follow the Flutter release's requirements, not
+  their own latest.
+
+**One-time GitHub settings.** Repository description and topics; Settings →
+Code security: Dependabot alerts and security updates on; the three signing
+secrets; optionally a branch protection rule on trunk requiring the `test`
+workflow's checks.
+

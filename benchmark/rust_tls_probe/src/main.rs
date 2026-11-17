@@ -35,7 +35,11 @@
 //! On the phone (from the repo root; bench phone 192.168.0.61):
 //!   dart run benchmark/socket_pump.dart export-identity \
 //!     benchmark/rust_tls_probe/identity
+//!   ndk_bin="$(echo "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin)"
 //!   (cd benchmark/rust_tls_probe && \
+//!     CC_aarch64_linux_android="$ndk_bin/aarch64-linux-android30-clang" \
+//!     AR_aarch64_linux_android="$ndk_bin/llvm-ar" \
+//!     CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk_bin/aarch64-linux-android30-clang" \
 //!     cargo build --release --target aarch64-linux-android)
 //!   adb push benchmark/rust_tls_probe/target/aarch64-linux-android/release/rust_tls_probe \
 //!     benchmark/rust_tls_probe/identity/cert.pem \
