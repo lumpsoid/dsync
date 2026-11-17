@@ -97,7 +97,7 @@ dependencies:
   # `checkDebugAarMetadata` before any Dart runs. 12.0.1's Android half
   # compiles against 36 and the API used here (`manageExternalStorage`,
   # `storage`, `openAppSettings`) is identical.
-  permission_handler: 12.0.1
+  permission_handler: 13.0.2
 
   # Keeps the screen on for as long as a run is live on the mobile head, so
   # the screen timeout cannot suspend the process in the middle of an apply
