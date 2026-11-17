@@ -37,7 +37,7 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  crypto: ^3.0.7
+  crypto: ^3.0.8
 
   # Kept only for benchmark/interleaved_pairs.dart's own flag parsing now
   # that the Dart CLI, which this was pinned for (SPEC §3's cross-host
@@ -59,7 +59,7 @@ dependencies:
   # already resolved into this project through `flutter` itself, so this adds
   # nothing to the closure), no Flutter SDK dependency — it runs the same on
   # every v1 target (SPEC §3) including the four with no `app` head.
-  qr: 4.0.0
+  qr: 4.0.1
 
   # The QR *decoder* the Pair page scans a `dsync pair show` code with — the
   # camera as a second input method beside the pasted text (SPEC §16). Not to
@@ -72,7 +72,7 @@ dependencies:
   # Dart call `lib/app/features/pair/` makes. Its Dart side reaches the
   # camera through `MobileScanner`; nothing under `native/` imports it, so
   # the Rust-only builds are untouched (§3).
-  mobile_scanner: 7.4.2
+  mobile_scanner: 7.5.0
 
   # The platform directory picker the Run setup page offers for a local
   # replica root outside the app's own container (task eb35c3). Pinned for
@@ -111,7 +111,7 @@ dependencies:
   # are untouched (§3). It brings `http`
   # and `package_info_plus` into the closure (its web half reads the browser's
   # user agent); both are transitive and neither is imported here.
-  wakelock_plus: 1.8.0
+  wakelock_plus: 1.8.2
 
   # Pinned, not a range (SPEC §3, same rationale as the other pins above),
   # and this one is the odd dependency out: it is a platform-channel plugin,
@@ -142,7 +142,7 @@ dependencies:
   # Dart *build hook* this project's toolchain has not been verified
   # against. 2.5.1 is the last plugin-based release; revisit this pin next
   # time `path_provider` needs a bump.
-  path_provider_foundation: 2.5.1
+  path_provider_foundation: 2.6.0
 
   # The Flutter head's bridge to the Rust core in native/ (task 07876c
   # spike). An FFI plugin with no Dart build hook. Pinned to the `rinf`
