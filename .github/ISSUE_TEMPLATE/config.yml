@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to contribute
+    url: https://github.com/lumpsoid/dsync/blob/trunk/CONTRIBUTING.md
+    about: The issue-first flow, setup, and the gates a pull request passes.

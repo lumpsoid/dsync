@@ -16,10 +16,25 @@ on:
     branches: [trunk]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FLUTTER_VERSION: 3.47.9
 
 jobs:
+  # pubspec.yaml and every shipped crate name the same version.
+  versions:
+    name: version files agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/version.sh check
+
   flutter-test:
     name: flutter test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
