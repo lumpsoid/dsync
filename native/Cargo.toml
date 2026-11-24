@@ -40,7 +40,7 @@ sha2 = "0.10"
 similar = { version = "3.2", default-features = false, features = ["std", "text", "inline"] }
 tempfile = "3"
 thiserror = "2"
-toml = { version = "0.9", default-features = false, features = ["parse", "display", "serde", "std"] }
+toml = { version = "1.2", default-features = false, features = ["parse", "display", "serde", "std"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 ring = "0.17"
 x509-parser = "0.16"
